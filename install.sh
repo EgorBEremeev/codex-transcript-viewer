@@ -27,5 +27,11 @@ fi
 codex plugin marketplace add sadanand1120/codex-transcript-viewer --ref main
 codex plugin add "$plugin"
 
-codex plugin marketplace list
-codex plugin list
+codex plugin marketplace list | awk -v marketplace="$marketplace" '
+  NR > 1 && $1 == marketplace {print; found = 1}
+  END {exit !found}
+'
+codex plugin list | awk -v plugin="$plugin" '
+  $1 == plugin {print; found = 1}
+  END {exit !found}
+'
