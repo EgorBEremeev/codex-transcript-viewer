@@ -22,12 +22,14 @@ codex-transcript --json list --limit 10
 Start narrow and machine-readable:
 
 ```bash
-codex-transcript query SESSION --kind message --format jsonl --compact
-codex-transcript query SSH_ALIAS:SESSION_ID --kind message --format jsonl --compact
+codex-transcript query SESSION --view conversation --last 10 --format jsonl --compact
+codex-transcript query SSH_ALIAS:SESSION_ID --view conversation --last 10 --format jsonl --compact
 codex-transcript query SESSION --turn TURN_ID --format jsonl --compact
 codex-transcript query SESSION --tool exec --format jsonl --compact
 codex-transcript tree SESSION --format json
 ```
+
+`--view conversation` reconciles duplicate log representations into the canonical user/assistant flow. Use `--last N` to bound recent context. Query raw normalized events only when the conversation view does not contain the needed evidence.
 
 Use `export` when a durable artifact is needed:
 

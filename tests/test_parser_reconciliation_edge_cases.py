@@ -2,7 +2,12 @@ from __future__ import annotations
 
 import unittest
 
-from codex_transcript_viewer.parser import extract_conversation
+from codex_transcript_viewer.parser import normalize_entries, project_conversation
+
+
+def _conversation(entries: list[dict]) -> tuple[dict, list[dict]]:
+    session = normalize_entries(entries, include_raw=False)
+    return session["meta"], project_conversation(session["events"])
 
 
 def _event_msg(ts: str, payload: dict) -> dict:
@@ -36,7 +41,7 @@ class ParserReconciliationEdgeCaseTests(unittest.TestCase):
             ),
         ]
 
-        _meta, events = extract_conversation(entries)
+        _meta, events = _conversation(entries)
         event_texts = [event.get("text", "") for event in events]
         self.assertIn("early commentary", event_texts)
         self.assertIn("early reasoning", event_texts)
@@ -64,7 +69,7 @@ class ParserReconciliationEdgeCaseTests(unittest.TestCase):
             ),
         ]
 
-        _meta, events = extract_conversation(entries)
+        _meta, events = _conversation(entries)
         self.assertTrue(
             any(
                 event["type"] == "task_complete"
@@ -113,7 +118,7 @@ class ParserReconciliationEdgeCaseTests(unittest.TestCase):
             ),
         ]
 
-        _meta, events = extract_conversation(entries)
+        _meta, events = _conversation(entries)
         token_events = [event for event in events if event["type"] == "token_count"]
         self.assertEqual(len(token_events), 2)
         self.assertEqual(

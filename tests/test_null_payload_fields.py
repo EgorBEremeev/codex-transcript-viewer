@@ -3,11 +3,16 @@ from __future__ import annotations
 import unittest
 
 from codex_transcript_viewer.html_builder import build_html
-from codex_transcript_viewer.parser import extract_conversation
+from codex_transcript_viewer.parser import normalize_entries, project_conversation
+
+
+def _conversation(entries: list[dict]) -> tuple[dict, list[dict]]:
+    session = normalize_entries(entries, include_raw=False)
+    return session["meta"], project_conversation(session["events"])
 
 
 class NullPayloadFieldsTests(unittest.TestCase):
-    def test_extract_conversation_normalizes_nullable_text_fields(self) -> None:
+    def test_projection_normalizes_nullable_text_fields(self) -> None:
         entries = [
             {"type": "session_meta", "payload": {"id": "session-1"}},
             {
@@ -48,12 +53,12 @@ class NullPayloadFieldsTests(unittest.TestCase):
             },
         ]
 
-        _meta, events = extract_conversation(entries)
+        _meta, events = _conversation(entries)
         # Empty task_complete messages are now suppressed to avoid blank "final answer" blocks.
         event_types = [event["type"] for event in events]
         self.assertNotIn("task_complete", event_types)
         self.assertEqual(events[0]["text"], "")
-        self.assertEqual(events[1]["name"], "")
+        self.assertEqual(events[1]["name"], "function_call")
         self.assertEqual(events[1]["arguments"], "")
         self.assertEqual(events[1]["call_id"], "")
         self.assertEqual(events[2]["output"], "")
@@ -68,7 +73,7 @@ class NullPayloadFieldsTests(unittest.TestCase):
             },
         ]
 
-        meta, events = extract_conversation(entries)
+        meta, events = _conversation(entries)
         html = build_html(meta, events)
         self.assertIsInstance(html, str)
         self.assertNotIn('assistant-message final-answer" id="msg-', html)

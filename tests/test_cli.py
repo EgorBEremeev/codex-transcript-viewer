@@ -119,6 +119,104 @@ class CliTests(unittest.TestCase):
         self.assertEqual(event["name"], "exec")
         self.assertNotIn("raw", event)
 
+    def test_compact_retains_all_normalized_fields_except_known_raw(self) -> None:
+        event = {
+            "kind": "turn_aborted",
+            "seq": 7,
+            "reason": "interrupted",
+            "num_turns": 2,
+            "rate_limits": {"limit_id": "codex"},
+            "new_normalized_field": "x" * 2001,
+            "raw": {"secret": "record"},
+        }
+        prepared = cli._prepare_event(event, compact=True, redact=False)
+        self.assertEqual(prepared["reason"], "interrupted")
+        self.assertEqual(prepared["num_turns"], 2)
+        self.assertEqual(prepared["rate_limits"], {"limit_id": "codex"})
+        self.assertEqual(prepared["new_normalized_field"]["length"], 2001)
+        self.assertNotIn("raw", prepared)
+
+        event["kind"] = "unknown"
+        self.assertIn("raw", cli._prepare_event(event, compact=True, redact=False))
+
+    def test_conversation_view_deduplicates_and_keeps_last_n(self) -> None:
+        records = [
+            json.loads(line)
+            for line in self.root_path.read_text(encoding="utf-8").splitlines()[:2]
+        ]
+        records.extend([
+            {
+                "timestamp": "2026-07-11T12:00:02Z",
+                "type": "event_msg",
+                "payload": {"type": "user_message", "message": "hello"},
+            },
+            *[
+                {
+                    "timestamp": "2026-07-11T12:00:02Z",
+                    "type": "event_msg",
+                    "payload": {"type": "token_count", "info": {"marker": index}},
+                }
+                for index in range(10)
+            ],
+            {
+                "timestamp": "2026-07-11T12:00:03Z",
+                "type": "response_item",
+                "payload": {
+                    "type": "message", "role": "user",
+                    "content": [{"type": "input_text", "text": "hello"}],
+                },
+            },
+            {
+                "timestamp": "2026-07-11T12:00:04Z",
+                "type": "event_msg",
+                "payload": {"type": "agent_message", "message": "working"},
+            },
+            {
+                "timestamp": "2026-07-11T12:00:05Z",
+                "type": "response_item",
+                "payload": {
+                    "type": "message", "role": "assistant", "phase": "commentary",
+                    "content": [{"type": "output_text", "text": "working"}],
+                },
+            },
+            {
+                "timestamp": "2026-07-11T12:00:06Z",
+                "type": "event_msg",
+                "payload": {
+                    "type": "agent_message", "phase": "final_answer", "message": "done",
+                },
+            },
+            {
+                "timestamp": "2026-07-11T12:00:07Z",
+                "type": "response_item",
+                "payload": {
+                    "type": "message", "role": "assistant", "phase": "final_answer",
+                    "content": [{"type": "output_text", "text": "done"}],
+                },
+            },
+            {
+                "timestamp": "2026-07-11T12:00:08Z",
+                "type": "event_msg",
+                "payload": {"type": "task_complete", "last_agent_message": "done"},
+            },
+        ])
+        self.root_path.write_text(
+            "".join(json.dumps(record) + "\n" for record in records),
+            encoding="utf-8",
+        )
+
+        stdout = io.StringIO()
+        with redirect_stdout(stdout):
+            cli.main([
+                "query", str(self.root_path), "--view", "conversation",
+                "--last", "10", "--compact",
+            ])
+        events = [json.loads(line) for line in stdout.getvalue().splitlines()]
+        self.assertEqual([event["text"] for event in events], ["hello", "working", "done"])
+        self.assertEqual([event["kind"] for event in events], ["message"] * 3)
+        self.assertEqual([event["role"] for event in events], ["user", "assistant", "assistant"])
+        self.assertEqual([event["phase"] for event in events], ["", "commentary", "final_answer"])
+
     def test_render_is_private_and_marks_final_answer(self) -> None:
         output = self.root / "viewer.html"
         stdout = io.StringIO()
@@ -143,6 +241,51 @@ class CliTests(unittest.TestCase):
         self.assertEqual(redacted["access_token"], "<redacted>")
         self.assertNotIn("sk-live-SECRET", redacted["arguments"])
         self.assertNotIn("sk-live-SECRET", redacted["output"])
+
+    def test_redaction_covers_common_credential_assignments(self) -> None:
+        value = (
+            "HF_TOKEN=hf-secret GITHUB_TOKEN:gh-secret "
+            "AWS_SECRET_ACCESS_KEY=aws-secret input_tokens=12"
+        )
+        redacted = cli._redact(value)
+        self.assertNotIn("hf-secret", redacted)
+        self.assertNotIn("gh-secret", redacted)
+        self.assertNotIn("aws-secret", redacted)
+        self.assertIn("input_tokens=12", redacted)
+
+    def test_writing_commands_reject_source_as_output_without_truncating(self) -> None:
+        original = self.root_path.read_bytes()
+        commands = [
+            ["render", str(self.root_path), "--output", str(self.root_path)],
+            ["browser", str(self.root_path), "--output", str(self.root_path)],
+            ["export", str(self.root_path), "--output", str(self.root_path)],
+            ["query", str(self.root_path), "--output", str(self.root_path)],
+        ]
+        with mock.patch.object(cli, "_open_browser") as opener:
+            for command in commands:
+                with self.subTest(command=command[0]):
+                    with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                        cli.main(command)
+                    self.assertEqual(self.root_path.read_bytes(), original)
+        opener.assert_not_called()
+
+    def test_output_guard_resolves_symlinks(self) -> None:
+        alias = self.root / "source-alias.jsonl"
+        alias.symlink_to(self.root_path)
+        with self.assertRaisesRegex(ValueError, "output path is the source transcript"):
+            cli._resolve_output(alias, self.root_path)
+
+    def test_output_result_expands_home(self) -> None:
+        output = self.root / "query.jsonl"
+        stdout = io.StringIO()
+        with mock.patch.dict(os.environ, {"HOME": str(self.root)}), redirect_stdout(stdout):
+            cli.main([
+                "--json", "query", str(self.root_path),
+                "--kind", "tool_call", "--output", "~/query.jsonl",
+            ])
+        result = json.loads(stdout.getvalue())["data"]
+        self.assertEqual(result["path"], str(output))
+        self.assertTrue(output.is_file())
 
     def test_private_writer_tightens_existing_permissions(self) -> None:
         output = self.root / "existing.txt"

@@ -4,12 +4,16 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from codex_transcript_viewer.html_builder import build_html
+from codex_transcript_viewer import parser
 from codex_transcript_viewer.parser import (
     iter_normalized,
+    load_conversation,
     load_session,
     normalize_entries,
+    project_conversation,
     viewer_projection,
 )
 
@@ -19,6 +23,64 @@ def _entry(outer_type: str, payload: dict, timestamp: str = "2026-07-11T13:00:00
 
 
 class NormalizedParserTests(unittest.TestCase):
+    def test_root_stream_prepass_stops_after_session_metadata(self) -> None:
+        entries = [
+            _entry("session_meta", {"id": "session-1"}),
+            _entry("event_msg", {"type": "task_started", "turn_id": "turn-1"}),
+            _entry("event_msg", {"type": "user_message", "message": "hello"}),
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "session.jsonl"
+            path.write_text("\n".join(json.dumps(entry) for entry in entries), encoding="utf-8")
+            actual_read_records = parser._read_records
+            pass_counts: list[int] = []
+
+            def tracked_records(source):
+                pass_counts.append(0)
+                for record in actual_read_records(source):
+                    pass_counts[-1] += 1
+                    yield record
+
+            with patch.object(parser, "_read_records", side_effect=tracked_records):
+                streamed = list(iter_normalized(path, include_raw=False))
+
+        self.assertEqual(pass_counts, [1, 3])
+        self.assertEqual(len(streamed), 3)
+
+    def test_load_conversation_streams_known_records_without_raw_payloads(self) -> None:
+        entries = [
+            _entry("session_meta", {"id": "session-1"}),
+            _entry("event_msg", {"type": "task_started", "turn_id": "turn-1"}),
+            _entry("event_msg", {"type": "user_message", "message": "hello"}),
+            _entry(
+                "response_item",
+                {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "hello"}],
+                },
+            ),
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "session.jsonl"
+            path.write_text("\n".join(json.dumps(entry) for entry in entries), encoding="utf-8")
+            meta, conversation = load_conversation(path)
+
+        self.assertEqual(meta["id"], "session-1")
+        self.assertEqual([event["type"] for event in conversation].count("user_message"), 1)
+        self.assertNotIn("raw", json.dumps(conversation))
+
+    def test_projection_accepts_normalized_event_generator(self) -> None:
+        entries = [
+            _entry("session_meta", {"id": "session-1"}),
+            _entry("event_msg", {"type": "user_message", "message": "hello"}),
+        ]
+        session = normalize_entries(entries, include_raw=False)
+
+        conversation = project_conversation(event for event in session["events"])
+
+        self.assertEqual(conversation[-1]["text"], "hello")
+
     def test_retains_modern_records_and_links_both_tool_shapes(self) -> None:
         entries = [
             _entry("session_meta", {"id": "session-1"}),
@@ -364,6 +426,15 @@ class NormalizedParserTests(unittest.TestCase):
         self.assertIn("function archiveVisible", html)
         self.assertNotIn('class="rollback-block" open', html)
         self.assertIn("archived B", html)
+
+    def test_html_falls_back_for_unregistered_semantic_event(self) -> None:
+        html = build_html(
+            {"id": "session-1"},
+            iter([{"type": "future_semantic_event", "ts": "", "detail": "kept"}]),
+        )
+
+        self.assertIn("future semantic event", html)
+        self.assertIn("kept", html)
 
 
 if __name__ == "__main__":

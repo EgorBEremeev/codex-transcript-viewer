@@ -3,7 +3,12 @@ from __future__ import annotations
 import unittest
 from collections import Counter
 
-from codex_transcript_viewer.parser import extract_conversation
+from codex_transcript_viewer.parser import normalize_entries, project_conversation
+
+
+def _conversation(entries: list[dict]) -> tuple[dict, list[dict]]:
+    session = normalize_entries(entries, include_raw=False)
+    return session["meta"], project_conversation(session["events"])
 
 
 def _event_msg(ts: str, payload: dict) -> dict:
@@ -59,7 +64,7 @@ class ParserStreamReconciliationTests(unittest.TestCase):
             ),
         ]
 
-        _meta, events = extract_conversation(entries)
+        _meta, events = _conversation(entries)
         counts = Counter(event["type"] for event in events)
 
         self.assertEqual(counts["assistant_text"], 2)
@@ -87,7 +92,7 @@ class ParserStreamReconciliationTests(unittest.TestCase):
             ),
         ]
 
-        _meta, events = extract_conversation(entries)
+        _meta, events = _conversation(entries)
         counts = Counter(event["type"] for event in events)
 
         self.assertEqual(counts["agent_commentary"], 1)
@@ -115,7 +120,7 @@ class ParserStreamReconciliationTests(unittest.TestCase):
             ),
         ]
 
-        _meta, events = extract_conversation(entries)
+        _meta, events = _conversation(entries)
         counts = Counter(event["type"] for event in events)
 
         self.assertEqual(counts["assistant_text"], 1)
@@ -163,7 +168,7 @@ class ParserStreamReconciliationTests(unittest.TestCase):
             _event_msg("2026-02-27T10:26:22.301Z", token_payload(total_2, "codex")),
         ]
 
-        _meta, events = extract_conversation(entries)
+        _meta, events = _conversation(entries)
         token_events = [event for event in events if event["type"] == "token_count"]
 
         self.assertEqual(len(token_events), 2)

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from datetime import datetime
 from importlib import resources
+from typing import Iterable
 
 from .formatting import format_ts, format_ts_full
 from .markdown import escape, render_markdown
@@ -15,7 +16,7 @@ def _load_asset(name: str) -> str:
     return resources.files(__package__).joinpath(name).read_text(encoding="utf-8")
 
 
-def build_html(meta: dict | None, events: list[dict]) -> str:
+def build_html(meta: dict | None, events: Iterable[dict]) -> str:
     """Build a self-contained HTML string from session metadata and events."""
     session_id = meta.get("id", "unknown") if meta else "unknown"
     model = meta.get("model_provider", "") if meta else ""
@@ -69,22 +70,21 @@ def build_html(meta: dict | None, events: list[dict]) -> str:
 def _render_events(events, sidebar, messages, *, prefix="msg", include_sidebar=True):
     hidden_sidebar: list[str] = []
     for index, evt in enumerate(events, 1):
-        handler = _EVENT_HANDLERS.get(evt["type"])
-        if handler:
-            before = len(messages)
-            handler(
-                evt,
-                format_ts(evt["ts"]),
-                f"{prefix}-{index}",
-                sidebar if include_sidebar else hidden_sidebar,
-                messages,
-            )
-            if not include_sidebar:
-                role = _event_role(evt["type"])
-                for position in range(before, len(messages)):
-                    messages[position] = (
-                        f'<div class="rollback-event {role}">{messages[position]}</div>'
-                    )
+        handler = _EVENT_HANDLERS.get(evt.get("type"), _render_system_detail)
+        before = len(messages)
+        handler(
+            evt,
+            format_ts(evt.get("ts", "")),
+            f"{prefix}-{index}",
+            sidebar if include_sidebar else hidden_sidebar,
+            messages,
+        )
+        if not include_sidebar:
+            role = _event_role(evt.get("type"))
+            for position in range(before, len(messages)):
+                messages[position] = (
+                    f'<div class="rollback-event {role}">{messages[position]}</div>'
+                )
 
 
 def _event_role(event_type):

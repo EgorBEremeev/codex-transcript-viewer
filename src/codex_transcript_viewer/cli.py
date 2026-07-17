@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import webbrowser
+from collections import deque
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Any, Iterable
@@ -23,7 +24,7 @@ from .discovery import (
     session_summary,
 )
 from .html_builder import build_html
-from .parser import SCHEMA_VERSION, iter_normalized, load_session, viewer_projection
+from .parser import SCHEMA_VERSION, iter_normalized, load_conversation
 from .transport import build_remote_tree, open_session_source, parse_remote_reference
 
 
@@ -33,8 +34,8 @@ _SECRET_KEY = re.compile(
     re.I,
 )
 _SECRET_LABEL = (
-    r"(?:[A-Za-z0-9]+[_-])*(?:password|secret|api[_-]?key|access[_-]?token|"
-    r"refresh[_-]?token|bearer[_-]?token)"
+    r"(?:[A-Za-z0-9]+[_-])*(?:password|secret[_-]?access[_-]?key|secret|"
+    r"api[_-]?key|access[_-]?token|refresh[_-]?token|bearer[_-]?token|token)"
 )
 _ASSIGNED_SECRET = re.compile(
     rf"(\b{_SECRET_LABEL}\b\s*(?:=|:)\s*)([\"']?)([^\s,\"';]+)",
@@ -45,19 +46,13 @@ _HEADER_SECRET = re.compile(
     re.I,
 )
 _BEARER_SECRET = re.compile(r"(\bbearer\s+)([^\s,\"';]+)", re.I)
-_COMPACT_FIELDS = (
-    "kind", "seq", "line", "timestamp", "session_id", "parent_session_id",
-    "turn_id", "origin", "outer_type", "raw_type", "call_id", "paired_seq",
-    "name", "namespace", "role", "phase", "status", "text", "arguments",
-    "input", "output", "content", "summary", "error",
-)
 
 
 def _version() -> str:
     try:
         return version("codex-transcript-viewer")
     except PackageNotFoundError:
-        return "0.4.1"
+        return "0.5.0"
 
 
 def _safe_filename(value: str) -> str:
@@ -71,6 +66,16 @@ def _open_private(path: Path):
     os.fchmod(descriptor, 0o600)
     os.ftruncate(descriptor, 0)
     return os.fdopen(descriptor, "w", encoding="utf-8")
+
+
+def _resolve_output(value: str | Path, source: Path) -> Path:
+    output = Path(value).expanduser().resolve()
+    resolved_source = source.expanduser().resolve()
+    if output == resolved_source or (
+        output.exists() and resolved_source.exists() and output.samefile(resolved_source)
+    ):
+        raise ValueError(f"output path is the source transcript: {output}")
+    return output
 
 
 def _write_private(path: Path, text: str) -> None:
@@ -129,9 +134,12 @@ def _truncate(value: Any, limit: int = 2000) -> Any:
 
 def _prepare_event(event: dict[str, Any], *, compact: bool, redact: bool) -> dict[str, Any]:
     if compact:
-        prepared = {key: _truncate(event[key]) for key in _COMPACT_FIELDS if key in event}
-        if event.get("kind") in {"unknown", "parse_error"} and "raw" in event:
-            prepared["raw"] = _truncate(event["raw"])
+        keep_raw = event.get("kind") in {"unknown", "parse_error"}
+        prepared = {
+            key: _truncate(value)
+            for key, value in event.items()
+            if key != "raw" or keep_raw
+        }
     else:
         prepared = dict(event)
     prepared["schema_version"] = SCHEMA_VERSION
@@ -167,16 +175,84 @@ def _matches(event: dict[str, Any], args: argparse.Namespace) -> bool:
     return True
 
 
+def _conversation_event(event: dict[str, Any]) -> dict[str, Any] | None:
+    outer_type = event.get("outer_type")
+    kind = event.get("kind")
+    if outer_type == "response_item" and kind == "message":
+        if event.get("role") not in {"user", "assistant"}:
+            return None
+        canonical = dict(event)
+        if canonical["role"] == "user":
+            canonical["phase"] = ""
+        elif canonical.get("phase") != "final_answer":
+            canonical["phase"] = canonical.get("phase") or "commentary"
+        return canonical
+    if outer_type != "event_msg":
+        return None
+
+    role = None
+    phase = ""
+    if kind == "user_message":
+        role = "user"
+    elif kind == "agent_message":
+        role = "assistant"
+        phase = str(event.get("phase") or "commentary")
+    elif kind == "task_complete" and event.get("text"):
+        role = "assistant"
+        phase = "final_answer"
+    if role is None:
+        return None
+
+    canonical = dict(event)
+    canonical.update({"kind": "message", "role": role, "phase": phase})
+    return canonical
+
+
+def _conversation_events(events: Iterable[dict[str, Any]]) -> Iterable[dict[str, Any]]:
+    seen: dict[tuple[str, str, str, str], tuple[str, str]] = {}
+    for event in events:
+        candidate = _conversation_event(event)
+        if candidate is None:
+            continue
+        fingerprint = (
+            str(candidate.get("turn_id", "")),
+            str(candidate.get("role", "")),
+            str(candidate.get("phase", "")),
+            str(candidate.get("text", "")),
+        )
+        representation = (
+            str(candidate.get("outer_type", "")),
+            str(candidate.get("raw_type", "")),
+        )
+        previous_representation = seen.get(fingerprint)
+        if previous_representation is not None and previous_representation != representation:
+            continue
+        seen.setdefault(fingerprint, representation)
+        yield candidate
+
+
 def _selected_events(path: Path, args: argparse.Namespace) -> Iterable[dict[str, Any]]:
-    count = 0
-    for event in iter_normalized(
+    events: Iterable[dict[str, Any]] = iter_normalized(
         path,
         include_inherited=getattr(args, "include_inherited", False),
         include_raw=not getattr(args, "compact", False),
-    ):
-        if not _matches(event, args):
-            continue
-        yield _prepare_event(event, compact=args.compact, redact=args.redact)
+    )
+    if getattr(args, "view", "events") == "conversation":
+        events = _conversation_events(events)
+
+    selected: Iterable[dict[str, Any]] = (
+        _prepare_event(event, compact=args.compact, redact=args.redact)
+        for event in events
+        if _matches(event, args)
+    )
+    last = getattr(args, "last", None)
+    if last is not None:
+        yield from deque(selected, maxlen=last)
+        return
+
+    count = 0
+    for event in selected:
+        yield event
         count += 1
         if args.limit is not None and count >= args.limit:
             return
@@ -196,8 +272,7 @@ def _event_markdown(event: dict[str, Any]) -> str:
     return f"{heading}\n\n{body}\n"
 
 
-def _emit_events(events: Iterable[dict[str, Any]], fmt: str, output: str) -> int:
-    destination = None if output == "-" else Path(output).expanduser().resolve()
+def _emit_events(events: Iterable[dict[str, Any]], fmt: str, destination: Path | None) -> int:
     if fmt == "json":
         materialized = list(events)
         text = json.dumps(
@@ -233,21 +308,19 @@ def _emit_events(events: Iterable[dict[str, Any]], fmt: str, output: str) -> int
 
 
 def _render(path: Path, output: Path, args: argparse.Namespace) -> dict[str, Any]:
-    session = load_session(
+    meta, events = load_conversation(
         path,
         include_inherited=args.include_inherited,
-        include_raw=True,
     )
     if args.redact:
-        session = _redact(session)
-    meta, events = viewer_projection(session)
+        meta, events = _redact(meta), _redact(events)
     _write_private(output, build_html(meta, events))
     return {
         "path": str(output),
         "bytes": output.stat().st_size,
         "events": len(events),
         "session_id": meta.get("id", ""),
-        "warnings": session.get("warnings", []),
+        "warnings": [] if meta else ["session_meta not found"],
     }
 
 
@@ -272,7 +345,6 @@ def _add_export_flags(parser: argparse.ArgumentParser) -> None:
     _add_session_flags(parser)
     parser.add_argument("--compact", action="store_true", help="omit raw known records and truncate large values")
     parser.add_argument("--redact", action="store_true", help="redact values under secret-like keys")
-    parser.add_argument("--limit", type=_positive_int, help="maximum matching events")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -300,11 +372,16 @@ def build_parser() -> argparse.ArgumentParser:
 
     export = subparsers.add_parser("export", help="export normalized transcript events")
     _add_export_flags(export)
+    export.add_argument("--limit", type=_positive_int, help="maximum matching events")
     export.add_argument("--format", choices=("jsonl", "json", "markdown"), default="jsonl")
     export.add_argument("--output", default="-", help="output file or - for stdout")
 
     query = subparsers.add_parser("query", help="filter normalized transcript events")
     _add_export_flags(query)
+    query.add_argument("--view", choices=("events", "conversation"), default="events")
+    bounds = query.add_mutually_exclusive_group()
+    bounds.add_argument("--limit", type=_positive_int, help="maximum matching events")
+    bounds.add_argument("--last", type=_positive_int, help="keep the last N matching events")
     query.add_argument("--kind")
     query.add_argument("--type")
     query.add_argument("--turn")
@@ -390,7 +467,8 @@ def run(args: argparse.Namespace) -> None:
             data = _read_raw(path, args.line)
             _print_result(_redact(data) if args.redact else data, args.json)
         elif args.command == "render":
-            data = _render(path, Path(args.output).expanduser().resolve(), args)
+            output = _resolve_output(args.output, path)
+            data = _render(path, output, args)
             if source.remote:
                 data["source"] = source.remote.display
             _print_result(data, args.json)
@@ -398,13 +476,13 @@ def run(args: argparse.Namespace) -> None:
             meta = read_session_meta(path)
             session_id = str(meta.get("id") or meta.get("session_id") or path.stem)
             if args.output:
-                output = Path(args.output).expanduser().resolve()
+                output = _resolve_output(args.output, path)
             else:
                 directory = Path(tempfile.gettempdir()) / "codex-transcript"
                 directory.mkdir(mode=0o700, parents=True, exist_ok=True)
                 directory.chmod(0o700)
                 name = f"{source.remote.host}-{session_id}" if source.remote else session_id
-                output = directory / f"{_safe_filename(name)}.html"
+                output = _resolve_output(directory / f"{_safe_filename(name)}.html", path)
             data = _render(path, output, args)
             if source.remote:
                 data["source"] = source.remote.display
@@ -414,9 +492,10 @@ def run(args: argparse.Namespace) -> None:
             data["opened"] = True
             _print_result(data, args.json)
         elif args.command in {"export", "query"}:
-            count = _emit_events(_selected_events(path, args), args.format, args.output)
-            if args.output != "-":
-                result = {"path": str(Path(args.output).resolve()), "events": count}
+            output = None if args.output == "-" else _resolve_output(args.output, path)
+            count = _emit_events(_selected_events(path, args), args.format, output)
+            if output is not None:
+                result = {"path": str(output), "events": count}
                 if source.remote:
                     result["source"] = source.remote.display
                 _print_result(result, args.json)

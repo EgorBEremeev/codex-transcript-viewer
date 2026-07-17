@@ -73,21 +73,6 @@ def _as_text(value: Any) -> str:
     return ""
 
 
-def parse_jsonl(path: str | Path) -> list[dict]:
-    """Read a JSONL file and return a list of parsed JSON objects."""
-    entries = []
-    with open(path, encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                entries.append(json.loads(line))
-            except json.JSONDecodeError:
-                continue
-    return entries
-
-
 def load_session(
     path: str | Path,
     include_inherited: bool = False,
@@ -116,9 +101,10 @@ def iter_normalized(
 ) -> Iterator[dict[str, Any]]:
     """Yield normalized events without retaining the transcript in memory.
 
-    A constant-memory prepass finds session identity and the subagent boundary,
-    then events are streamed. Tool outputs carry ``paired_seq`` when their
-    matching call has already appeared; both sides carry the stable ``call_id``.
+    A short prepass reads the first session metadata record. Only subagent logs
+    are scanned further to find their native-history boundary. Tool outputs
+    carry ``paired_seq`` when their matching call has already appeared; both
+    sides carry the stable ``call_id``.
     """
     source = str(Path(path))
     meta_record, boundary = _scan_session(path)
@@ -148,39 +134,49 @@ def normalize_entries(
     )
 
 
-def viewer_projection(
-    session: dict[str, Any],
-) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    """Project normalized events into the compact legacy viewer event model."""
+def project_conversation(events: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Build the canonical, deduplicated semantic conversation projection.
+
+    The input may be a streaming normalized event iterator. Raw records are
+    discarded as each event is projected, so only the substantially smaller
+    semantic conversation is retained for reconciliation and rollback grouping.
+    """
     projected: list[dict[str, Any]] = []
     turn_seq = 0
-    for event in session.get("events", []):
+    for event in events:
         if event.get("kind") == "task_started":
             turn_seq += 1
-        raw = event.get("raw")
-        if isinstance(raw, dict):
-            payload = raw.get("payload")
-            payload = payload if isinstance(payload, dict) else {}
-            if raw.get("type") == "event_msg":
-                before = len(projected)
-                _handle_event_msg(payload, event.get("timestamp", ""), projected, turn_seq)
-                if len(projected) > before:
-                    continue
-            if raw.get("type") == "response_item":
-                before = len(projected)
-                _handle_response_item(payload, event.get("timestamp", ""), projected, turn_seq)
-                if len(projected) > before:
-                    continue
-                if payload.get("role") in {"developer", "system"}:
-                    continue
         fallback = _project_normalized_event(event, turn_seq)
         if fallback is not None:
             projected.append(fallback)
 
     reconciled = _group_rolled_back_turns(_reconcile_events(projected))
-    return session.get("meta") or {}, [
-        _strip_internal_keys(event) for event in reconciled
-    ]
+    return [_strip_internal_keys(event) for event in reconciled]
+
+
+def load_conversation(
+    path: str | Path,
+    include_inherited: bool = False,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Stream a transcript into metadata and its semantic conversation."""
+    meta_record, boundary = _scan_session(path)
+    meta = _meta_payload(meta_record)
+    events = _iter_events(
+        _read_records(path),
+        meta_record=meta_record,
+        boundary=boundary,
+        source=str(Path(path)),
+        include_inherited=include_inherited,
+        include_raw=False,
+    )
+    return meta, project_conversation(events)
+
+
+def viewer_projection(
+    session: dict[str, Any],
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Project an already-loaded normalized session for the HTML viewer."""
+    return session.get("meta") or {}, project_conversation(session.get("events", []))
 
 
 def _read_records(path: str | Path) -> Iterator[tuple[int, Any, str | None]]:
@@ -261,6 +257,8 @@ def _scan_session(
         if meta_record is None:
             if isinstance(entry, dict) and entry.get("type") == "session_meta":
                 meta_record = record
+                if not _is_subagent(_meta_payload(meta_record)):
+                    return meta_record, None
             continue
         if _is_native_task_start(entry, meta_record):
             return meta_record, record[0]
@@ -592,257 +590,6 @@ def _has_positive_usage(total: dict[str, Any]) -> bool:
     )
 
 
-def extract_conversation(
-    entries: list[dict],
-) -> tuple[dict | None, list[dict]]:
-    """Extract session metadata and meaningful conversation events.
-
-    Returns (meta, events) where meta is the session_meta payload and events
-    is a flat list of typed dicts representing user messages, assistant
-    responses, tool calls, reasoning blocks, and system events.
-    """
-    raw_events: list[dict] = []
-    meta: dict | None = None
-    turn_seq = 0
-
-    for entry in entries:
-        ts = entry.get("timestamp", "")
-        etype = entry.get("type", "")
-        payload = entry.get("payload") or {}
-
-        if etype == "session_meta":
-            meta = payload
-            continue
-
-        if etype == "event_msg":
-            if payload.get("type", "") == "task_started":
-                turn_seq += 1
-            _handle_event_msg(payload, ts, raw_events, turn_seq)
-            continue
-
-        if etype == "response_item":
-            _handle_response_item(payload, ts, raw_events, turn_seq)
-            continue
-
-    reconciled = _reconcile_events(raw_events)
-    cleaned = [_strip_internal_keys(event) for event in reconciled]
-    return meta, cleaned
-
-
-def _handle_event_msg(
-    payload: dict[str, Any],
-    ts: str,
-    events: list[dict],
-    turn_seq: int,
-) -> None:
-    msg_type = payload.get("type", "")
-
-    if msg_type == "user_message":
-        events.append(
-            {
-                "type": "user_message",
-                "ts": ts,
-                "text": _as_text(payload.get("message", "")),
-                "images": payload.get("local_images", []),
-                "_source": "event_msg",
-                "_turn_seq": turn_seq,
-            }
-        )
-    elif msg_type == "agent_message":
-        events.append(
-            {
-                "type": "agent_commentary",
-                "ts": ts,
-                "text": _as_text(payload.get("message", "")),
-                "_source": "event_msg",
-                "_turn_seq": turn_seq,
-            }
-        )
-    elif msg_type == "agent_reasoning":
-        events.append(
-            {
-                "type": "reasoning",
-                "ts": ts,
-                "text": _as_text(payload.get("text", "")),
-                "_source": "event_msg",
-                "_turn_seq": turn_seq,
-            }
-        )
-    elif msg_type == "task_complete":
-        events.append(
-            {
-                "type": "task_complete",
-                "ts": ts,
-                "text": _as_text(payload.get("last_agent_message", "")),
-                "turn_id": _as_text(payload.get("turn_id", "")),
-                "_source": "event_msg",
-                "_turn_seq": turn_seq,
-            }
-        )
-    elif msg_type == "task_started":
-        events.append(
-            {
-                "type": "task_started",
-                "ts": ts,
-                "turn_id": _as_text(payload.get("turn_id", "")),
-                "model_context_window": payload.get("model_context_window", ""),
-                "_source": "event_msg",
-                "_turn_seq": turn_seq,
-            }
-        )
-    elif msg_type == "turn_aborted":
-        events.append(
-            {
-                "type": "turn_aborted",
-                "ts": ts,
-                "reason": _as_text(payload.get("reason", "")),
-                "_source": "event_msg",
-                "_turn_seq": turn_seq,
-            }
-        )
-    elif msg_type == "token_count":
-        info = payload.get("info") or {}
-        total = info.get("total_token_usage", {})
-        if isinstance(total, dict) and total and _has_positive_usage(total):
-            rate_limits = payload.get("rate_limits")
-            limit_id = (
-                _as_text(rate_limits.get("limit_id", ""))
-                if isinstance(rate_limits, dict)
-                else ""
-            )
-            events.append(
-                {
-                    "type": "token_count",
-                    "ts": ts,
-                    "total": total,
-                    "rate_limit_ids": [limit_id] if limit_id else [],
-                    "rate_limits": [rate_limits] if isinstance(rate_limits, dict) else [],
-                    "_source": "event_msg",
-                    "_turn_seq": turn_seq,
-                }
-            )
-    elif msg_type == "thread_rolled_back":
-        events.append(
-            {
-                "type": "thread_rolled_back",
-                "ts": ts,
-                "num_turns": payload.get("num_turns", 0),
-                "_source": "event_msg",
-                "_turn_seq": turn_seq,
-            }
-        )
-    elif msg_type in {
-        "patch_apply_begin",
-        "patch_apply_end",
-        "sub_agent_activity",
-        "thread_settings_applied",
-        "web_search_begin",
-        "web_search_end",
-    }:
-        event = {
-            "type": msg_type,
-            "ts": ts,
-            "_source": "event_msg",
-            "_turn_seq": turn_seq,
-        }
-        event.update({key: value for key, value in payload.items() if key != "type"})
-        events.append(event)
-
-
-def _handle_response_item(
-    payload: dict[str, Any],
-    ts: str,
-    events: list[dict],
-    turn_seq: int,
-) -> None:
-    item_type = payload.get("type", "")
-    role = payload.get("role", "")
-
-    if item_type in {"function_call", "custom_tool_call"}:
-        events.append(
-            {
-                "type": "tool_call",
-                "ts": ts,
-                "name": _as_text(payload.get("name", "")),
-                "arguments": _as_text(
-                    payload.get("arguments", payload.get("input", ""))
-                ),
-                "call_id": _as_text(payload.get("call_id", "")),
-                "_source": "response_item",
-                "_turn_seq": turn_seq,
-            }
-        )
-    elif item_type in {"function_call_output", "custom_tool_call_output"}:
-        events.append(
-            {
-                "type": "tool_output",
-                "ts": ts,
-                "call_id": _as_text(payload.get("call_id", "")),
-                "output": _as_text(payload.get("output", "")),
-                "_source": "response_item",
-                "_turn_seq": turn_seq,
-            }
-        )
-    elif item_type == "agent_message":
-        content = payload.get("content", [])
-        text = "\n".join(
-            _as_text(block.get("text"))
-            for block in content
-            if isinstance(block, dict) and block.get("type") == "input_text"
-        )
-        events.append(
-            {
-                "type": "inter_agent_message",
-                "ts": ts,
-                "text": text,
-                "author": _as_text(payload.get("author")),
-                "recipient": _as_text(payload.get("recipient")),
-                "_source": "response_item",
-                "_turn_seq": turn_seq,
-            }
-        )
-    elif item_type == "message" and role in {"assistant", "user"}:
-        content = payload.get("content", [])
-        phase = payload.get("phase", "")
-        for block in content:
-            block_type = block.get("type")
-            if role == "assistant" and block_type == "output_text":
-                events.append(
-                    {
-                        "type": "assistant_text",
-                        "ts": ts,
-                        "text": _as_text(block.get("text", "")),
-                        "phase": _as_text(phase),
-                        "_source": "response_item",
-                        "_turn_seq": turn_seq,
-                    }
-                )
-            elif role == "user" and block_type == "input_text":
-                events.append(
-                    {
-                        "type": "user_message",
-                        "ts": ts,
-                        "text": _as_text(block.get("text", "")),
-                        "images": [],
-                        "_source": "response_item",
-                        "_turn_seq": turn_seq,
-                    }
-                )
-    elif item_type == "reasoning":
-        summary = payload.get("summary", [])
-        for s in summary:
-            if s.get("type") == "summary_text":
-                events.append(
-                    {
-                        "type": "reasoning",
-                        "ts": ts,
-                        "text": _as_text(s.get("text", "")),
-                        "_source": "response_item",
-                        "_turn_seq": turn_seq,
-                    }
-                )
-
-
 def _project_normalized_event(event: dict[str, Any], turn_seq: int) -> dict | None:
     kind = event.get("kind")
     if kind == "session_meta":
@@ -909,6 +656,8 @@ def _project_normalized_event(event: dict[str, Any], turn_seq: int) -> dict | No
         projected["total"] = info.get("total_token_usage", {})
         rate_limits = event.get("rate_limits")
         projected["rate_limits"] = [rate_limits] if isinstance(rate_limits, dict) else []
+        limit_id = _as_text(rate_limits.get("limit_id")) if isinstance(rate_limits, dict) else ""
+        projected["rate_limit_ids"] = [limit_id] if limit_id else []
     elif kind == "user_message":
         projected["images"] = event.get("local_images", [])
     for key in (
@@ -922,6 +671,25 @@ def _project_normalized_event(event: dict[str, Any], turn_seq: int) -> dict | No
     ):
         if key in event:
             projected[key] = event[key]
+
+    if projected_type in {
+        "agent_commentary",
+        "assistant_text",
+        "inter_agent_message",
+        "reasoning",
+        "task_complete",
+        "user_message",
+    }:
+        projected["text"] = _as_text(projected.get("text"))
+    if projected_type == "tool_call":
+        projected["name"] = _as_text(event.get("name"))
+        projected["arguments"] = _as_text(event.get("arguments", event.get("input")))
+        projected["call_id"] = _as_text(event.get("call_id"))
+    elif projected_type == "tool_output":
+        projected["output"] = _as_text(event.get("output"))
+        projected["call_id"] = _as_text(event.get("call_id"))
+    elif projected_type == "turn_aborted":
+        projected["reason"] = _as_text(event.get("reason"))
     return projected
 
 

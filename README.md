@@ -12,15 +12,13 @@ This is a fork of [masonc15/codex-transcript-viewer](https://github.com/masonc15
 
 ## Install
 
-Clone the fork, then install the editable CLI and GitHub-backed Codex plugin:
+Install the CLI and Codex plugin directly from GitHub:
 
 ```bash
-git clone https://github.com/sadanand1120/codex-transcript-viewer.git
-cd codex-transcript-viewer
-./scripts/install-local.sh
+curl -fsSL https://raw.githubusercontent.com/sadanand1120/codex-transcript-viewer/main/install.sh | bash
 ```
 
-The installer adds the `codex-transcript` marketplace from GitHub and installs `codex-transcript@codex-transcript`.
+The installer refreshes both the `codex-transcript` CLI and `codex-transcript@codex-transcript` plugin without tying either installation to a checkout.
 
 ## Human commands
 
@@ -39,12 +37,14 @@ The viewer keeps rolled-back turns under closed archive markers. Tool calls, too
 
 ```bash
 codex-transcript --json doctor
-codex-transcript query SESSION --kind message --format jsonl --compact
+codex-transcript query SESSION --view conversation --last 10 --format jsonl --compact
 codex-transcript query SESSION --turn TURN_ID --compact
 codex-transcript export SESSION --format jsonl --compact --redact --output session.jsonl
 codex-transcript tree SESSION --format json
 codex-transcript raw SESSION --line 42 --redact
 ```
+
+`--view conversation` reconciles duplicate log representations into the canonical user/assistant flow. Use `--last N` to bound recent context before reaching for raw normalized events.
 
 `SESSION` accepts a local JSONL path, local session ID/prefix, or `SSH_HOST:SESSION_ID`. Remote references work with `render`, `browser`, `export`, `query`, `tree`, and `raw`.
 
@@ -74,8 +74,10 @@ The CLI is deterministic infrastructure. The plugin teaches Codex to discover se
 ## Development
 
 ```bash
-uv run --no-project --python 3.11 --with-editable . python -m unittest discover -s tests -v
-uv build
+git clone https://github.com/sadanand1120/codex-transcript-viewer.git
+cd codex-transcript-viewer
+./scripts/install-local.sh
+./scripts/run-tests.sh
 ```
 
-The runtime has no third-party dependencies.
+The local installer keeps the CLI editable for development. The runtime has no third-party dependencies.
