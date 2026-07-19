@@ -63,7 +63,10 @@ def _open_private(path: Path):
     path.parent.mkdir(parents=True, exist_ok=True)
     flags = os.O_WRONLY | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
     descriptor = os.open(path, flags, 0o600)
-    os.fchmod(descriptor, 0o600)
+    if hasattr(os, "fchmod"):
+        os.fchmod(descriptor, 0o600)
+    else:
+        os.chmod(path, 0o600)
     os.ftruncate(descriptor, 0)
     return os.fdopen(descriptor, "w", encoding="utf-8")
 
