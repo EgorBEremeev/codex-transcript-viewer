@@ -231,4 +231,3 @@ def build_spans(breakdown: dict[str, Any]) -> dict[str, Any]:
         "event_to_span": dict(sorted(event_to_span.items())),
         "warnings": warnings,
     }
-
