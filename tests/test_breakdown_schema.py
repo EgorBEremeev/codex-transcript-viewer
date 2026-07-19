@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 
 
-SCHEMA = Path(__file__).parents[1] / "scr" / "schemas" / "breakdown.schema.json"
+SCHEMA = Path(__file__).parents[1] / "src" / "schemas" / "breakdown.schema.json"
 
 
 class BreakdownSchemaTests(unittest.TestCase):
