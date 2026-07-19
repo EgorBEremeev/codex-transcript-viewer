@@ -42,11 +42,14 @@ codex-transcript query SESSION --turn TURN_ID --compact
 codex-transcript export SESSION --format jsonl --compact --redact --output session.jsonl
 codex-transcript tree SESSION --format json
 codex-transcript raw SESSION --line 42 --redact
+codex-transcript breakdown SESSION --output breakdown.json
 ```
 
 `--view conversation` reconciles duplicate log representations into the canonical user/assistant flow. Use `--last N` to bound recent context before reaching for raw normalized events.
 
 `SESSION` accepts a local JSONL path, local session ID/prefix, or `SSH_HOST:SESSION_ID`. Remote references work with `render`, `browser`, `export`, `query`, `tree`, and `raw`.
+
+`breakdown` is a local-only JSON export for performance analysis of a root session and its subagent tree. It preserves every physical record (including each `token_count` snapshot), records native/inherited provenance, pairs tool calls with outputs, and stores content sizes instead of transcript bodies. A unique JSONL basename in the sessions directory is also accepted by local commands.
 
 Remote sessions are fetched through `ssh-script`, parsed locally, and removed from private staging when the command finishes. Browser HTML, exports, and every other final output stay on the current machine; the remote session is never modified. Remote hosts need only Python 3 and a configured SSH alias. When supplied with a remote reference, `--sessions-dir` refers to the remote sessions directory.
 

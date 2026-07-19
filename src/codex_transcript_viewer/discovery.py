@@ -90,10 +90,12 @@ def resolve_session(reference: str, sessions_dir: str | Path | None = None) -> P
 
     summaries = [session_summary(path) for path in session_files(sessions_dir)]
     matches = [item for item in summaries if item["id"].startswith(reference)]
+    if not matches and Path(reference).name == reference and reference.endswith(".jsonl"):
+        matches = [item for item in summaries if Path(item["path"]).name == reference]
     if not matches:
         raise FileNotFoundError(f"session not found: {reference}")
     if len(matches) > 1:
-        raise ValueError(f"ambiguous session prefix {reference!r}: {len(matches)} matches")
+        raise ValueError(f"ambiguous session reference {reference!r}: {len(matches)} matches")
     return Path(matches[0]["path"])
 
 

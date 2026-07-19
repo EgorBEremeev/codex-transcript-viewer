@@ -23,6 +23,7 @@ from .discovery import (
     session_files,
     session_summary,
 )
+from .breakdown import build_breakdown
 from .html_builder import build_html
 from .parser import SCHEMA_VERSION, iter_normalized, load_conversation
 from .transport import build_remote_tree, open_session_source, parse_remote_reference
@@ -327,6 +328,23 @@ def _render(path: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
     }
 
 
+def _breakdown(reference: str, sessions_dir: str | Path | None, args: argparse.Namespace) -> dict[str, Any]:
+    local_candidate = Path(reference).expanduser()
+    if not local_candidate.is_file() and parse_remote_reference(reference) is not None:
+        raise ValueError("breakdown currently supports local sessions only")
+    data = build_breakdown(reference, sessions_dir)
+    if args.redact:
+        data = _redact(data)
+    if args.output != "-":
+        output = _resolve_output(args.output, Path(data["sessions"][0]["source_path"]))
+        sources = [Path(session["source_path"]).resolve() for session in data["sessions"]]
+        if output in sources:
+            raise ValueError(f"output path is a source transcript: {output}")
+        _write_private(output, json.dumps(data, ensure_ascii=False, indent=2) + "\n")
+        return {"path": str(output), "sessions": len(data["sessions"]), "root_session_id": data["root_session_id"]}
+    return data
+
+
 def _print_result(data: Any, as_json: bool) -> None:
     if as_json:
         print(json.dumps({"ok": True, "data": data}, ensure_ascii=False))
@@ -404,6 +422,11 @@ def build_parser() -> argparse.ArgumentParser:
     raw.add_argument("session")
     raw.add_argument("--line", type=int, required=True)
     raw.add_argument("--redact", action="store_true")
+
+    breakdown = subparsers.add_parser("breakdown", help="build a local analytical JSON dataset for a session tree")
+    breakdown.add_argument("session", help="JSONL path, session ID/prefix, or unique JSONL basename")
+    breakdown.add_argument("--output", default="-", help="output JSON file or - for stdout")
+    breakdown.add_argument("--redact", action="store_true")
     return parser
 
 
@@ -461,6 +484,11 @@ def run(args: argparse.Namespace) -> None:
             else build_tree(args.session, sessions_dir)
         )
         _print_result(data if args.format == "json" else _tree_text(data), args.json or args.format == "json")
+        return
+
+    if args.command == "breakdown":
+        data = _breakdown(args.session, sessions_dir, args)
+        _print_result(data, args.json)
         return
 
     source_dir = args.sessions_dir if remote else sessions_dir
