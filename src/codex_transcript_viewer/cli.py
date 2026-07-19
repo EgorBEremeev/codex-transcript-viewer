@@ -26,6 +26,8 @@ from .discovery import (
 from .breakdown import build_breakdown
 from .html_builder import build_html
 from .parser import SCHEMA_VERSION, iter_normalized, load_conversation
+from .spans import breakdown_sha256, build_spans
+from .trace_html_builder import build_trace_html
 from .transport import build_remote_tree, open_session_source, parse_remote_reference
 
 
@@ -346,6 +348,49 @@ def _breakdown(reference: str, sessions_dir: str | Path | None, args: argparse.N
     return data
 
 
+def _read_json_document(path: str | Path, label: str) -> tuple[Path, dict[str, Any]]:
+    source = Path(path).expanduser().resolve()
+    if not source.is_file():
+        raise FileNotFoundError(f"{label} file not found: {source}")
+    try:
+        value = json.loads(source.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as error:
+        raise ValueError(f"{label} is not valid JSON: {source}: {error.msg}") from error
+    if not isinstance(value, dict):
+        raise ValueError(f"{label} must contain a JSON object: {source}")
+    return source, value
+
+
+def _analyze_breakdown(path_value: str, args: argparse.Namespace) -> dict[str, Any]:
+    source, breakdown = _read_json_document(path_value, "breakdown")
+    analysis = build_spans(breakdown)
+    output_dir = Path(args.output).expanduser().resolve() if args.output else (Path.cwd() / "analysis" / _safe_filename(analysis["source"]["root_session_id"])).resolve()
+    if output_dir == source:
+        raise ValueError(f"analysis output directory is the source breakdown: {output_dir}")
+    output_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    output = output_dir / "spans.json"
+    _write_private(output, json.dumps(analysis, ensure_ascii=False, indent=2) + "\n")
+    return {"path": str(output), "spans": len(analysis["spans"]), "warnings": analysis["warnings"], "root_session_id": analysis["source"]["root_session_id"]}
+
+
+def _visualize_breakdown(path_value: str, spans_value: str, args: argparse.Namespace) -> dict[str, Any]:
+    source, breakdown = _read_json_document(path_value, "breakdown")
+    spans_path, analysis = _read_json_document(spans_value, "spans")
+    origin = analysis.get("source") if isinstance(analysis.get("source"), dict) else {}
+    if origin.get("root_session_id") != breakdown.get("root_session_id"):
+        raise ValueError("spans root_session_id does not match breakdown")
+    if origin.get("breakdown_schema_version") != breakdown.get("schema_version"):
+        raise ValueError("spans breakdown schema version does not match breakdown")
+    if origin.get("breakdown_sha256") != breakdown_sha256(breakdown):
+        raise ValueError("spans SHA-256 does not match breakdown; run analyze again")
+    requested_output = args.output or f"{_safe_filename(str(breakdown['root_session_id']))}-trace.html"
+    output = Path(requested_output).expanduser().resolve()
+    if output in {source, spans_path}:
+        raise ValueError(f"visualization output path is an input source: {output}")
+    _write_private(output, build_trace_html(breakdown, analysis))
+    return {"path": str(output), "bytes": output.stat().st_size, "sessions": len(breakdown.get("sessions", [])), "spans": len(analysis.get("spans", [])), "root_session_id": breakdown["root_session_id"]}
+
+
 def _print_result(data: Any, as_json: bool) -> None:
     if as_json:
         print(json.dumps({"ok": True, "data": data}, ensure_ascii=False))
@@ -428,6 +473,15 @@ def build_parser() -> argparse.ArgumentParser:
     breakdown.add_argument("session", help="JSONL path, session ID/prefix, or unique JSONL basename")
     breakdown.add_argument("--output", default=None, help="output JSON file; defaults to <root-session-id>-breakdown.json, or use - for stdout")
     breakdown.add_argument("--redact", action="store_true")
+
+    analyze = subparsers.add_parser("analyze", help="derive reusable trace spans from a breakdown JSON file")
+    analyze.add_argument("breakdown", help="local breakdown JSON file")
+    analyze.add_argument("--output", help="analysis directory; defaults to analysis/<root-session-id>")
+
+    visualize = subparsers.add_parser("visualize", help="build a self-contained Trace HTML from breakdown and spans")
+    visualize.add_argument("breakdown", help="local breakdown JSON file")
+    visualize.add_argument("--spans", required=True, help="spans.json produced by analyze")
+    visualize.add_argument("--output", default=None, help="output HTML; defaults to <root-session-id>-trace.html")
     return parser
 
 
@@ -473,6 +527,22 @@ def run(args: argparse.Namespace) -> None:
     if args.command == "list":
         data = list_sessions(sessions_dir, limit=args.limit, cwd=args.cwd, thread_source=args.thread_source)
         _print_result(data, args.json)
+        return
+
+    if args.command == "analyze":
+        data = _analyze_breakdown(args.breakdown, args)
+        if not args.json:
+            print(f"spans written: {data['path']}")
+        else:
+            _print_result(data, True)
+        return
+
+    if args.command == "visualize":
+        data = _visualize_breakdown(args.breakdown, args.spans, args)
+        if not args.json:
+            print(f"trace written: {data['path']}")
+        else:
+            _print_result(data, True)
         return
 
     local_candidate = Path(args.session).expanduser()
