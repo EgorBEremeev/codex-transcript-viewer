@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import os
 import tempfile
 import unittest
 from contextlib import redirect_stdout
@@ -108,10 +109,24 @@ class BreakdownTests(unittest.TestCase):
     def test_cli_emits_dataset_for_unique_basename(self) -> None:
         stdout = io.StringIO()
         with redirect_stdout(stdout):
-            cli.main(["--sessions-dir", str(self.root), "breakdown", "root.jsonl"])
+            cli.main(["--sessions-dir", str(self.root), "breakdown", "root.jsonl", "--output", "-"])
         data = json.loads(stdout.getvalue())
         self.assertEqual(data["root_session_id"], ROOT_ID)
         self.assertEqual(len(data["sessions"]), 2)
+
+    def test_cli_default_output_writes_to_cwd_and_reports_path(self) -> None:
+        output = self.root / f"{ROOT_ID}-breakdown.json"
+        stdout = io.StringIO()
+        previous = Path.cwd()
+        try:
+            os.chdir(self.root)
+            with redirect_stdout(stdout):
+                cli.main(["--sessions-dir", str(self.root), "breakdown", "root.jsonl"])
+        finally:
+            os.chdir(previous)
+        self.assertTrue(output.is_file())
+        self.assertIn(str(output), stdout.getvalue())
+        self.assertEqual(json.loads(output.read_text(encoding="utf-8"))["root_session_id"], ROOT_ID)
 
 
 if __name__ == "__main__":

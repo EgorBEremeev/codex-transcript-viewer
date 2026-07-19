@@ -336,7 +336,8 @@ def _breakdown(reference: str, sessions_dir: str | Path | None, args: argparse.N
     if args.redact:
         data = _redact(data)
     if args.output != "-":
-        output = _resolve_output(args.output, Path(data["sessions"][0]["source_path"]))
+        requested_output = args.output or f"{_safe_filename(data['root_session_id'])}-breakdown.json"
+        output = _resolve_output(requested_output, Path(data["sessions"][0]["source_path"]))
         sources = [Path(session["source_path"]).resolve() for session in data["sessions"]]
         if output in sources:
             raise ValueError(f"output path is a source transcript: {output}")
@@ -425,7 +426,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     breakdown = subparsers.add_parser("breakdown", help="build a local analytical JSON dataset for a session tree")
     breakdown.add_argument("session", help="JSONL path, session ID/prefix, or unique JSONL basename")
-    breakdown.add_argument("--output", default="-", help="output JSON file or - for stdout")
+    breakdown.add_argument("--output", default=None, help="output JSON file; defaults to <root-session-id>-breakdown.json, or use - for stdout")
     breakdown.add_argument("--redact", action="store_true")
     return parser
 
@@ -488,7 +489,10 @@ def run(args: argparse.Namespace) -> None:
 
     if args.command == "breakdown":
         data = _breakdown(args.session, sessions_dir, args)
-        _print_result(data, args.json)
+        if args.output is None and not args.json:
+            print(f"breakdown written: {data['path']}")
+        else:
+            _print_result(data, args.json)
         return
 
     source_dir = args.sessions_dir if remote else sessions_dir
