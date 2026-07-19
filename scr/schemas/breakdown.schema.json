@@ -1,0 +1,212 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/sadanand1120/codex-transcript-viewer/schemas/breakdown.schema.json",
+  "title": "Codex Transcript Breakdown",
+  "description": "Analytical, lossless breakdown for one local Codex root session and its subagent tree.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "root_session_id",
+    "tree_metrics",
+    "sessions",
+    "timeline",
+    "warnings"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "root_session_id": { "type": "string" },
+    "tree_metrics": { "$ref": "#/$defs/treeMetrics" },
+    "sessions": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/session" }
+    },
+    "timeline": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/timelineEntry" }
+    },
+    "warnings": {
+      "type": "array",
+      "items": { "type": "string" }
+    }
+  },
+  "additionalProperties": true,
+  "$defs": {
+    "integerOrNull": {
+      "type": ["integer", "null"]
+    },
+    "numberOrNull": {
+      "type": ["number", "null"]
+    },
+    "wallClock": {
+      "type": "object",
+      "required": ["started_at", "ended_at", "duration_ms"],
+      "properties": {
+        "started_at": { "type": "string" },
+        "ended_at": { "type": "string" },
+        "duration_ms": { "$ref": "#/$defs/integerOrNull" }
+      },
+      "additionalProperties": true
+    },
+    "treeMetrics": {
+      "type": "object",
+      "required": ["wall_clock", "session_count", "events", "tools", "reported_token_usage", "context_material"],
+      "properties": {
+        "wall_clock": { "$ref": "#/$defs/wallClock" },
+        "session_count": { "type": "integer", "minimum": 0 },
+        "events": { "type": "object" },
+        "tools": { "type": "object" },
+        "reported_token_usage": { "type": "object" },
+        "context_material": { "type": "object" }
+      },
+      "additionalProperties": true
+    },
+    "session": {
+      "type": "object",
+      "required": [
+        "session_id",
+        "parent_session_id",
+        "agent_path",
+        "source_path",
+        "meta",
+        "meta_snapshots",
+        "record_scope",
+        "metrics",
+        "turns",
+        "events"
+      ],
+      "properties": {
+        "session_id": { "type": "string" },
+        "parent_session_id": { "type": "string" },
+        "agent_path": { "type": "string" },
+        "source_path": { "type": "string" },
+        "meta": { "type": "object" },
+        "meta_snapshots": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/metaSnapshot" }
+        },
+        "record_scope": { "$ref": "#/$defs/recordScope" },
+        "metrics": { "$ref": "#/$defs/sessionMetrics" },
+        "turns": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/turn" }
+        },
+        "events": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/event" }
+        }
+      },
+      "additionalProperties": true
+    },
+    "metaSnapshot": {
+      "type": "object",
+      "required": ["line", "timestamp", "fingerprint"],
+      "properties": {
+        "line": { "type": "integer", "minimum": 1 },
+        "timestamp": { "type": "string" },
+        "fingerprint": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "recordScope": {
+      "type": "object",
+      "required": ["source_records", "native_records", "inherited_records", "unknown_records", "native_boundary_line"],
+      "properties": {
+        "source_records": { "type": "integer", "minimum": 0 },
+        "native_records": { "type": "integer", "minimum": 0 },
+        "inherited_records": { "type": "integer", "minimum": 0 },
+        "unknown_records": { "type": "integer", "minimum": 0 },
+        "native_boundary_line": { "$ref": "#/$defs/integerOrNull" }
+      },
+      "additionalProperties": true
+    },
+    "sessionMetrics": {
+      "type": "object",
+      "required": ["events", "context_material", "reported_token_usage", "tools"],
+      "properties": {
+        "events": { "type": "object" },
+        "context_material": { "type": "object" },
+        "reported_token_usage": {
+          "type": "object",
+          "required": ["snapshot_count", "last_cumulative", "resets"],
+          "properties": {
+            "snapshot_count": { "type": "integer", "minimum": 0 },
+            "last_cumulative": { "type": "object" },
+            "resets": { "type": "array", "items": { "type": "string" } }
+          },
+          "additionalProperties": true
+        },
+        "tools": { "type": "object" }
+      },
+      "additionalProperties": true
+    },
+    "turn": {
+      "type": "object",
+      "required": ["turn_id", "start_at", "end_at", "duration_ms", "outcome", "start_event_id", "end_event_id"],
+      "properties": {
+        "turn_id": { "type": "string" },
+        "start_at": { "type": "string" },
+        "end_at": { "type": "string" },
+        "duration_ms": { "$ref": "#/$defs/numberOrNull" },
+        "time_to_first_token_ms": { "$ref": "#/$defs/numberOrNull" },
+        "outcome": { "enum": ["completed", "aborted"] },
+        "start_event_id": { "type": "string" },
+        "end_event_id": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "event": {
+      "type": "object",
+      "required": [
+        "event_id",
+        "line",
+        "seq",
+        "timestamp",
+        "timestamp_ms",
+        "outer_type",
+        "payload_type",
+        "kind",
+        "turn_id",
+        "record_origin",
+        "duration",
+        "details"
+      ],
+      "properties": {
+        "event_id": { "type": "string" },
+        "line": { "type": "integer", "minimum": 1 },
+        "seq": { "type": "integer", "minimum": 1 },
+        "timestamp": { "type": "string" },
+        "timestamp_ms": { "$ref": "#/$defs/integerOrNull" },
+        "outer_type": { "type": "string" },
+        "payload_type": { "type": "string" },
+        "kind": { "type": "string" },
+        "turn_id": { "type": "string" },
+        "record_origin": { "enum": ["native", "inherited", "unknown"] },
+        "duration": { "$ref": "#/$defs/duration" },
+        "details": { "type": "object" }
+      },
+      "additionalProperties": true
+    },
+    "duration": {
+      "type": "object",
+      "required": ["observed_ms", "reported_ms", "source"],
+      "properties": {
+        "observed_ms": { "$ref": "#/$defs/numberOrNull" },
+        "reported_ms": { "$ref": "#/$defs/numberOrNull" },
+        "source": { "type": ["string", "null"] }
+      },
+      "additionalProperties": true
+    },
+    "timelineEntry": {
+      "type": "object",
+      "required": ["event_id", "session_id", "timestamp", "timestamp_ms", "line"],
+      "properties": {
+        "event_id": { "type": "string" },
+        "session_id": { "type": "string" },
+        "timestamp": { "type": "string" },
+        "timestamp_ms": { "$ref": "#/$defs/integerOrNull" },
+        "line": { "type": "integer", "minimum": 1 }
+      },
+      "additionalProperties": true
+    }
+  }
+}
