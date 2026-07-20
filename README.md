@@ -43,7 +43,7 @@ codex-transcript export SESSION --format jsonl --compact --redact --output sessi
 codex-transcript tree SESSION --format json
 codex-transcript raw SESSION --line 42 --redact
 codex-transcript breakdown SESSION --output breakdown.json
-codex-transcript analyze breakdown.json --output analysis/SESSION_ID
+codex-transcript analyze breakdown.json --since 2026-07-20:09:30:00 --output analysis/SESSION_ID
 codex-transcript visualize breakdown.json --spans analysis/SESSION_ID/spans.json --output trace.html
 ```
 
@@ -53,7 +53,7 @@ codex-transcript visualize breakdown.json --spans analysis/SESSION_ID/spans.json
 
 `breakdown` is a local-only JSON export for performance analysis of a root session and its subagent tree. It preserves every physical record (including each `token_count` snapshot), records native/inherited provenance, pairs tool calls with outputs, and stores content sizes instead of transcript bodies. A unique JSONL basename in the sessions directory is also accepted by local commands.
 
-`analyze` reads an immutable breakdown JSON and writes `spans.json`: task, session, turn, and linked tool spans. It keeps only event IDs and derived timing/size attributes, never a second copy of the events. `visualize` validates that spans were generated from the supplied breakdown and writes a self-contained local Trace HTML with the common time scale, cumulative payload/token graphs, and the numerical event table.
+`analyze` reads an immutable breakdown JSON and writes `spans.json`: task, session, turn, and linked tool spans. It keeps only event IDs and derived timing/size attributes, never a second copy of the events. `--since YYYY-MM-DD:HH:MM:SS` is an inclusive lower event boundary in the local time zone of the machine that runs `analyze`; older dated events are omitted from spans and the viewer, while timestamp-less records remain visible. `visualize` validates that spans were generated from the supplied breakdown and writes a self-contained local Trace HTML with the common time scale, cumulative payload/token graphs, and the numerical event table.
 
 Remote sessions are fetched through `ssh-script`, parsed locally, and removed from private staging when the command finishes. Browser HTML, exports, and every other final output stay on the current machine; the remote session is never modified. Remote hosts need only Python 3 and a configured SSH alias. When supplied with a remote reference, `--sessions-dir` refers to the remote sessions directory.
 

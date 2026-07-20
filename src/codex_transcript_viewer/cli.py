@@ -11,6 +11,7 @@ import sys
 import tempfile
 import webbrowser
 from collections import deque
+from datetime import datetime
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Any, Iterable
@@ -361,16 +362,26 @@ def _read_json_document(path: str | Path, label: str) -> tuple[Path, dict[str, A
     return source, value
 
 
+def _local_cutoff(value: str) -> tuple[int, str]:
+    """Parse YYYY-MM-DD:HH:MM:SS in the machine's local time zone."""
+    try:
+        local = datetime.strptime(value, "%Y-%m-%d:%H:%M:%S").astimezone()
+    except ValueError as error:
+        raise ValueError("--since must use YYYY-MM-DD:HH:MM:SS in local time") from error
+    return round(local.timestamp() * 1000), local.isoformat()
+
+
 def _analyze_breakdown(path_value: str, args: argparse.Namespace) -> dict[str, Any]:
     source, breakdown = _read_json_document(path_value, "breakdown")
-    analysis = build_spans(breakdown)
+    cutoff_ms, cutoff_local = _local_cutoff(args.since) if args.since else (None, None)
+    analysis = build_spans(breakdown, cutoff_ms=cutoff_ms, cutoff_local=cutoff_local)
     output_dir = Path(args.output).expanduser().resolve() if args.output else (Path.cwd() / "analysis" / _safe_filename(analysis["source"]["root_session_id"])).resolve()
     if output_dir == source:
         raise ValueError(f"analysis output directory is the source breakdown: {output_dir}")
     output_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     output = output_dir / "spans.json"
     _write_private(output, json.dumps(analysis, ensure_ascii=False, indent=2) + "\n")
-    return {"path": str(output), "spans": len(analysis["spans"]), "warnings": analysis["warnings"], "root_session_id": analysis["source"]["root_session_id"]}
+    return {"path": str(output), "spans": len(analysis["spans"]), "warnings": analysis["warnings"], "root_session_id": analysis["source"]["root_session_id"], "included_events": analysis["included_event_count"], "excluded_events": analysis["excluded_event_count"]}
 
 
 def _visualize_breakdown(path_value: str, spans_value: str, args: argparse.Namespace) -> dict[str, Any]:
@@ -477,6 +488,7 @@ def build_parser() -> argparse.ArgumentParser:
     analyze = subparsers.add_parser("analyze", help="derive reusable trace spans from a breakdown JSON file")
     analyze.add_argument("breakdown", help="local breakdown JSON file")
     analyze.add_argument("--output", help="analysis directory; defaults to analysis/<root-session-id>")
+    analyze.add_argument("--since", help="include events at or after local YYYY-MM-DD:HH:MM:SS")
 
     visualize = subparsers.add_parser("visualize", help="build a self-contained Trace HTML from breakdown and spans")
     visualize.add_argument("breakdown", help="local breakdown JSON file")

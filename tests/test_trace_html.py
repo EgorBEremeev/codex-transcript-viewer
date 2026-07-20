@@ -54,6 +54,13 @@ class TraceHtmlTests(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 cli.main(["visualize", str(second_path), "--spans", str(spans_path), "--output", str(root / "out.html")])
 
+    def test_cli_analyze_rejects_invalid_local_cutoff(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            breakdown = Path(temp) / "breakdown.json"
+            breakdown.write_text(json.dumps(fixture()), encoding="utf-8")
+            with self.assertRaises(SystemExit):
+                cli.main(["analyze", str(breakdown), "--since", "2026-07-20T12:00:00"])
+
 
 if __name__ == "__main__":
     unittest.main()

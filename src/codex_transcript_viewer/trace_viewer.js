@@ -5,7 +5,8 @@
   const COLORS = { input_tokens: "#246bce", cached_input_tokens: "#67a6ee", cache_write_input_tokens: "#8358c7", output_tokens: "#149174", reasoning_output_tokens: "#df7c2c", model_context_window: "#8e99aa" };
   const TOKEN_KEYS = ["input_tokens", "cached_input_tokens", "cache_write_input_tokens", "output_tokens", "reasoning_output_tokens"];
   const state = { sessionId: breakdown.root_session_id, role: "", spanKind: "", eventKind: "", search: "", domain: null, enabled: new Set([...TOKEN_KEYS, "model_context_window"]) };
-  const sessions = new Map((breakdown.sessions || []).map(session => [session.session_id, session]));
+  const includedEventIds = new Set(Object.keys(analysis.event_to_span || {}));
+  const sessions = new Map((breakdown.sessions || []).map(session => ({...session, events: (session.events || []).filter(event => includedEventIds.has(event.event_id))})).filter(session => session.events.length).map(session => [session.session_id, session]));
   const events = new Map();
   for (const session of sessions.values()) for (const event of session.events || []) events.set(event.event_id, event);
   const spans = analysis.spans || [];
@@ -14,7 +15,7 @@
   const toolSpans = spans.filter(span => span.kind === "tool");
   const toolByCall = new Map(toolSpans.map(span => [span.start_event_id, span]));
   const allDated = [...events.values()].filter(event => Number.isFinite(event.timestamp_ms));
-  const fullDomain = [Math.min(...allDated.map(event => event.timestamp_ms)), Math.max(...allDated.map(event => event.timestamp_ms))];
+  const fullDomain = allDated.length ? [Math.min(...allDated.map(event => event.timestamp_ms)), Math.max(...allDated.map(event => event.timestamp_ms))] : [0, 1];
   const roles = new Map();
   for (const session of sessions.values()) {
     const role = session.meta && session.meta.agent_role ? session.meta.agent_role : "user";
@@ -61,7 +62,8 @@
 
   function renderHeader() {
     const task = spans.find(span => span.kind === "task");
-    document.getElementById("trace-summary").textContent = `Root ${breakdown.root_session_id} · source breakdown schema ${breakdown.schema_version} · span analysis ${analysis.analysis_version}`;
+    const cutoff = analysis.source && analysis.source.event_cutoff;
+    document.getElementById("trace-summary").textContent = `Root ${breakdown.root_session_id} · ${events.size} retained events${cutoff ? ` · since ${cutoff.local}` : ""} · source breakdown schema ${breakdown.schema_version} · span analysis ${analysis.analysis_version}`;
     document.getElementById("summary-cards").innerHTML = [
       ["Sessions", sessions.size], ["Events", events.size], ["Spans", spans.length], ["Wall clock", duration(task && task.duration_ms)]
     ].map(([label, value]) => `<div class="summary-card">${esc(label)}<strong>${esc(value)}</strong></div>`).join("");
