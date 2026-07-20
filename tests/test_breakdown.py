@@ -9,7 +9,7 @@ import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
 
-from codex_transcript_viewer.breakdown import build_breakdown
+from codex_transcript_viewer.breakdown import _decode_command, build_breakdown
 from codex_transcript_viewer import cli
 from codex_transcript_viewer.discovery import resolve_session
 
@@ -60,7 +60,7 @@ class BreakdownTests(unittest.TestCase):
             record("2026-07-11T11:59:00Z", "session_meta", meta(CHILD_ID, parent=ROOT_ID)),
             record("2026-07-11T11:59:01Z", "event_msg", {"type": "token_count", "info": {"total_token_usage": {"input_tokens": 99, "total_tokens": 99}}}),
             record("2026-07-11T12:00:05Z", "event_msg", {"type": "task_started", "turn_id": CHILD_TURN, "started_at": 1783771205}),
-            record("2026-07-11T12:00:06Z", "response_item", {"type": "custom_tool_call", "id": "ctc", "call_id": "exec", "name": "exec", "input": 'await tools.shell_command({"command":"Get-Content C:\\\\repo\\\\file.txt; ' + ('x' * 160) + '"});', "internal_chat_message_metadata_passthrough": {"turn_id": CHILD_TURN}}),
+            record("2026-07-11T12:00:06Z", "response_item", {"type": "custom_tool_call", "id": "ctc", "call_id": "exec", "name": "exec", "input": 'await tools.shell_command({command:"Get-Content C:\\\\repo\\\\file.txt; ' + ('x' * 160) + '"});', "internal_chat_message_metadata_passthrough": {"turn_id": CHILD_TURN}}),
             record("2026-07-11T12:00:07Z", "response_item", {"type": "custom_tool_call_output", "id": "ctco", "call_id": "exec", "output": [{"type": "input_text", "text": "ёж"}], "internal_chat_message_metadata_passthrough": {"turn_id": CHILD_TURN}}),
             record("2026-07-11T12:00:08Z", "event_msg", {"type": "token_count", "info": {"total_token_usage": {"input_tokens": 100, "total_tokens": 100}, "last_token_usage": {"input_tokens": 100}}, "rate_limits": {"limit_id": "codex"}}),
             record("2026-07-11T12:00:09Z", "event_msg", {"type": "token_count", "info": {"total_token_usage": {"input_tokens": 100, "total_tokens": 100}, "last_token_usage": {"input_tokens": 0}}, "rate_limits": {"limit_id": "codex"}}),
@@ -105,6 +105,10 @@ class BreakdownTests(unittest.TestCase):
         self.assertEqual(call["duration"]["reported_ms"], 2100)
         self.assertEqual(call["duration"]["source"], "call_to_output_timestamp")
         self.assertEqual(resolve_session("root.jsonl", self.root), self.root_path.resolve())
+
+    def test_decode_command_accepts_unquoted_javascript_object_keys(self) -> None:
+        self.assertEqual(_decode_command('{command:"Get-Content C:\\\\repo\\\\file.txt"}'), r"Get-Content C:\repo\file.txt")
+        self.assertEqual(_decode_command("{command:'Get-Content C:\\\\repo\\\\file.txt'}"), r"Get-Content C:\repo\file.txt")
 
     def test_cli_emits_dataset_for_unique_basename(self) -> None:
         stdout = io.StringIO()
