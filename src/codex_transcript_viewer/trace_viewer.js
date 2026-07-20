@@ -59,8 +59,11 @@
   function activeDomain() { if (state.domain) return state.domain; const end = state.untilMs === null ? fullDomain[1] : Math.min(fullDomain[1], state.untilMs); return end >= fullDomain[0] ? [fullDomain[0], end] : [end - 1, end]; }
   function spanLabel(span) {
     if (span.kind !== "tool") return span.kind;
-    const attrs = span.attributes || {}; const nested = Array.isArray(attrs.nested_calls) ? attrs.nested_calls[0] : null;
-    return [attrs.name, nested && nested.tool, nested && nested.command_name].filter(Boolean).join(" → ") || "tool";
+    const attrs = span.attributes || {};
+    const nested = Array.isArray(attrs.nested_calls) ? attrs.nested_calls : [];
+    const name = attrs.name || "tool";
+    const calls = nested.map(call => [call && call.tool, call && call.command_name].filter(Boolean).join(" → ")).filter(Boolean);
+    return calls.length ? [name, ...calls].join(" → ") : name;
   }
   function matchText(value) { return !state.search || String(value || "").toLocaleLowerCase().includes(state.search); }
   function visibleSessions() {

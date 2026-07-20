@@ -34,7 +34,10 @@ def fixture() -> dict:
         details={
             "name": "exec", "call_id": "call-1", "output_event_ids": [f"{ROOT}:3"],
             "input_size": {"serialized_json_utf8_bytes": 20},
-            "nested_calls": [{"tool": "shell_command", "command_name": "Get-Content", "extraction": {"method": "test"}}],
+            "nested_calls": [
+                {"tool": "shell_command", "command_name": "Get-Content", "extraction": {"method": "test"}},
+                {"tool": "shell_command", "command_name": "Select-String", "extraction": {"method": "test"}},
+            ],
         },
     )
     output = event(f"{ROOT}:3", 3, "tool_output", turn_id=TURN, details={"call_id": "call-1", "paired_call_event_id": f"{ROOT}:2", "output_size": {"serialized_json_utf8_bytes": 30}})
@@ -62,6 +65,7 @@ class SpanTests(unittest.TestCase):
         self.assertEqual(tool["duration_ms"], 1000)
         self.assertEqual(tool["event_ids"], [f"{ROOT}:2", f"{ROOT}:3"])
         self.assertEqual(tool["attributes"]["nested_calls"][0]["command_name"], "Get-Content")
+        self.assertEqual(tool["attributes"]["nested_calls"][1]["command_name"], "Select-String")
         self.assertEqual(tool["attributes"]["payload_total_bytes"], 20)
         self.assertIn(tool["span_id"], result["event_to_span"][f"{ROOT}:3"])
         self.assertNotIn("details", tool)
