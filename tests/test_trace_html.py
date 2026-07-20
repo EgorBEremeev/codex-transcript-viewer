@@ -23,6 +23,8 @@ class TraceHtmlTests(unittest.TestCase):
         self.assertIn("trace-canvas", html)
         self.assertIn("isClipped", html)
         self.assertIn("tool&&!clipped", html)
+        self.assertIn('points:payloadPoints,alwaysVisible:true', html)
+        self.assertIn('(!item.alwaysVisible && !state.enabled.has(item.key))', html)
         self.assertIn("\\u003c/script", html)
         self.assertEqual(html.count("</script>"), 3)
         embedded = html.split('id="breakdown-data" type="application/json">', 1)[1].split("</script>", 1)[0]
