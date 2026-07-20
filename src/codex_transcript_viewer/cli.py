@@ -362,6 +362,12 @@ def _read_json_document(path: str | Path, label: str) -> tuple[Path, dict[str, A
     return source, value
 
 
+def _read_spans_document(path: str | Path) -> tuple[Path, dict[str, Any]]:
+    candidate = Path(path).expanduser().resolve()
+    source = candidate / "spans.json" if candidate.is_dir() else candidate
+    return _read_json_document(source, "spans")
+
+
 def _local_cutoff(value: str) -> tuple[int, str]:
     """Parse YYYY-MM-DD:HH:MM:SS in the machine's local time zone."""
     try:
@@ -375,6 +381,7 @@ def _analyze_breakdown(path_value: str, args: argparse.Namespace) -> dict[str, A
     source, breakdown = _read_json_document(path_value, "breakdown")
     cutoff_ms, cutoff_local = _local_cutoff(args.since) if args.since else (None, None)
     analysis = build_spans(breakdown, cutoff_ms=cutoff_ms, cutoff_local=cutoff_local)
+    analysis["source"]["breakdown_path"] = str(source)
     output_dir = Path(args.output).expanduser().resolve() if args.output else (Path.cwd() / "analysis" / _safe_filename(analysis["source"]["root_session_id"])).resolve()
     if output_dir == source:
         raise ValueError(f"analysis output directory is the source breakdown: {output_dir}")
@@ -384,10 +391,13 @@ def _analyze_breakdown(path_value: str, args: argparse.Namespace) -> dict[str, A
     return {"path": str(output), "spans": len(analysis["spans"]), "warnings": analysis["warnings"], "root_session_id": analysis["source"]["root_session_id"], "included_events": analysis["included_event_count"], "excluded_events": analysis["excluded_event_count"]}
 
 
-def _visualize_breakdown(path_value: str, spans_value: str, args: argparse.Namespace) -> dict[str, Any]:
-    source, breakdown = _read_json_document(path_value, "breakdown")
-    spans_path, analysis = _read_json_document(spans_value, "spans")
+def _visualize_breakdown(path_value: str | None, spans_value: str, args: argparse.Namespace) -> dict[str, Any]:
+    spans_path, analysis = _read_spans_document(spans_value)
     origin = analysis.get("source") if isinstance(analysis.get("source"), dict) else {}
+    breakdown_value = path_value or origin.get("breakdown_path")
+    if not isinstance(breakdown_value, str) or not breakdown_value:
+        raise ValueError("spans do not record a breakdown path; pass BREAKDOWN once or run analyze again")
+    source, breakdown = _read_json_document(breakdown_value, "breakdown")
     if origin.get("root_session_id") != breakdown.get("root_session_id"):
         raise ValueError("spans root_session_id does not match breakdown")
     if origin.get("breakdown_schema_version") != breakdown.get("schema_version"):
@@ -491,8 +501,8 @@ def build_parser() -> argparse.ArgumentParser:
     analyze.add_argument("--since", help="include events at or after local YYYY-MM-DD:HH:MM:SS")
 
     visualize = subparsers.add_parser("visualize", help="build a self-contained Trace HTML from breakdown and spans")
-    visualize.add_argument("breakdown", help="local breakdown JSON file")
-    visualize.add_argument("--spans", required=True, help="spans.json produced by analyze")
+    visualize.add_argument("breakdown", nargs="?", help="local breakdown JSON; optional when spans record its source")
+    visualize.add_argument("--spans", required=True, help="spans.json or its analysis directory")
     visualize.add_argument("--output", default=None, help="output HTML; defaults to <root-session-id>-trace.html")
     return parser
 

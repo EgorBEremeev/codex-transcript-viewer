@@ -39,7 +39,7 @@ class TraceHtmlTests(unittest.TestCase):
             self.assertTrue(spans.is_file())
             viewer = root / "trace.html"
             with redirect_stdout(stdout):
-                cli.main(["visualize", str(breakdown), "--spans", str(spans), "--output", str(viewer)])
+                cli.main(["visualize", "--spans", str(analysis_dir), "--output", str(viewer)])
             self.assertTrue(viewer.is_file())
             self.assertIn("Trace", viewer.read_text(encoding="utf-8"))
 
