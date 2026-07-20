@@ -373,14 +373,16 @@ def _local_cutoff(value: str) -> tuple[int, str]:
     try:
         local = datetime.strptime(value, "%Y-%m-%d:%H:%M:%S").astimezone()
     except ValueError as error:
-        raise ValueError("--since must use YYYY-MM-DD:HH:MM:SS in local time") from error
+        raise ValueError("--until must use YYYY-MM-DD:HH:MM:SS in local time") from error
     return round(local.timestamp() * 1000), local.isoformat()
 
 
 def _analyze_breakdown(path_value: str, args: argparse.Namespace) -> dict[str, Any]:
     source, breakdown = _read_json_document(path_value, "breakdown")
-    cutoff_ms, cutoff_local = _local_cutoff(args.since) if args.since else (None, None)
-    analysis = build_spans(breakdown, cutoff_ms=cutoff_ms, cutoff_local=cutoff_local)
+    until_ms, until_local = _local_cutoff(args.until) if args.until else (None, None)
+    analysis = build_spans(breakdown)
+    if until_ms is not None:
+        analysis["viewer_defaults"] = {"until_ms": until_ms, "until_local": until_local}
     analysis["source"]["breakdown_path"] = str(source)
     output_dir = Path(args.output).expanduser().resolve() if args.output else (Path.cwd() / "analysis" / _safe_filename(analysis["source"]["root_session_id"])).resolve()
     if output_dir == source:
@@ -388,7 +390,9 @@ def _analyze_breakdown(path_value: str, args: argparse.Namespace) -> dict[str, A
     output_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     output = output_dir / "spans.json"
     _write_private(output, json.dumps(analysis, ensure_ascii=False, indent=2) + "\n")
-    return {"path": str(output), "spans": len(analysis["spans"]), "warnings": analysis["warnings"], "root_session_id": analysis["source"]["root_session_id"], "included_events": analysis["included_event_count"], "excluded_events": analysis["excluded_event_count"]}
+    trace = output_dir / "trace.html"
+    _write_private(trace, build_trace_html(breakdown, analysis))
+    return {"path": str(output), "trace_path": str(trace), "spans": len(analysis["spans"]), "warnings": analysis["warnings"], "root_session_id": analysis["source"]["root_session_id"], "included_events": analysis["included_event_count"], "excluded_events": analysis["excluded_event_count"]}
 
 
 def _visualize_breakdown(path_value: str | None, spans_value: str, args: argparse.Namespace) -> dict[str, Any]:
@@ -498,7 +502,7 @@ def build_parser() -> argparse.ArgumentParser:
     analyze = subparsers.add_parser("analyze", help="derive reusable trace spans from a breakdown JSON file")
     analyze.add_argument("breakdown", help="local breakdown JSON file")
     analyze.add_argument("--output", help="analysis directory; defaults to analysis/<root-session-id>")
-    analyze.add_argument("--since", help="include events at or after local YYYY-MM-DD:HH:MM:SS")
+    analyze.add_argument("--until", help="initial viewer upper boundary: local YYYY-MM-DD:HH:MM:SS")
 
     visualize = subparsers.add_parser("visualize", help="build a self-contained Trace HTML from breakdown and spans")
     visualize.add_argument("breakdown", nargs="?", help="local breakdown JSON; optional when spans record its source")

@@ -50,6 +50,9 @@ _TEMPLATE = """<!doctype html>
       <label>Event kind <select id="event-filter"><option value="">Все markers</option></select></label>
       <label class="search-label">Поиск <input id="search-filter" type="search" placeholder="tool, команда, event"></label>
       <button id="reset-zoom" type="button">Весь интервал</button>
+      <label>Показывать до <input id="until-filter" type="text" inputmode="numeric" placeholder="YYYY-MM-DD:HH:MM:SS"></label>
+      <button id="apply-until" type="button">Применить</button>
+      <button id="clear-until" type="button">Весь trace</button>
     </section>
 
     <section class="panel trace-panel" aria-label="Trace">

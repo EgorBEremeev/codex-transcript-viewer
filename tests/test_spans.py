@@ -74,16 +74,15 @@ class SpanTests(unittest.TestCase):
         self.assertIsNone(tool["end_event_id"])
         self.assertTrue(result["warnings"])
 
-    def test_cutoff_is_inclusive_and_does_not_copy_old_events(self) -> None:
+    def test_spans_always_include_the_complete_breakdown(self) -> None:
         data = fixture()
-        result = build_spans(data, cutoff_ms=3000, cutoff_local="2026-07-20T03:00:03+03:00")
-        self.assertEqual(result["source"]["event_cutoff"]["timestamp_ms"], 3000)
-        self.assertEqual(result["excluded_event_count"], 2)
-        self.assertNotIn(f"{ROOT}:2", result["event_to_span"])
+        result = build_spans(data)
+        self.assertEqual(result["excluded_event_count"], 0)
+        self.assertIn(f"{ROOT}:2", result["event_to_span"])
         self.assertIn(f"{ROOT}:3", result["event_to_span"])
         root_span = next(span for span in result["spans"] if span["span_id"] == f"session:{ROOT}")
-        self.assertEqual(root_span["start_event_id"], f"{ROOT}:3")
-        self.assertFalse(any(span["kind"] == "tool" and span["session_id"] == ROOT for span in result["spans"]))
+        self.assertEqual(root_span["start_event_id"], f"{ROOT}:1")
+        self.assertTrue(any(span["kind"] == "tool" and span["session_id"] == ROOT for span in result["spans"]))
 
 
 if __name__ == "__main__":

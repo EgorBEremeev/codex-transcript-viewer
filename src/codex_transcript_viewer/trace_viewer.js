@@ -4,7 +4,8 @@
   const analysis = JSON.parse(document.getElementById("spans-data").textContent);
   const COLORS = { input_tokens: "#246bce", cached_input_tokens: "#67a6ee", cache_write_input_tokens: "#8358c7", output_tokens: "#149174", reasoning_output_tokens: "#df7c2c", model_context_window: "#8e99aa" };
   const TOKEN_KEYS = ["input_tokens", "cached_input_tokens", "cache_write_input_tokens", "output_tokens", "reasoning_output_tokens"];
-  const state = { sessionId: breakdown.root_session_id, role: "", spanKind: "", eventKind: "", search: "", domain: null, enabled: new Set([...TOKEN_KEYS, "model_context_window"]) };
+  const defaults = analysis.viewer_defaults || {};
+  const state = { sessionId: breakdown.root_session_id, role: "", spanKind: "", eventKind: "", search: "", domain: null, untilMs: Number.isFinite(defaults.until_ms) ? defaults.until_ms : null, enabled: new Set([...TOKEN_KEYS, "model_context_window"]) };
   const includedEventIds = new Set(Object.keys(analysis.event_to_span || {}));
   const sessions = new Map((breakdown.sessions || []).map(session => ({...session, events: (session.events || []).filter(event => includedEventIds.has(event.event_id))})).filter(session => session.events.length).map(session => [session.session_id, session]));
   const events = new Map();
@@ -30,6 +31,9 @@
   const eventDetails = event => event && event.details && typeof event.details === "object" ? event.details : {};
   const payload = event => Number(eventDetails(event).payload_size && eventDetails(event).payload_size.serialized_json_utf8_bytes) || 0;
   const size = (event, field) => Number(eventDetails(event)[field] && eventDetails(event)[field].serialized_json_utf8_bytes) || 0;
+  const visibleAt = event => !Number.isFinite(event.timestamp_ms) || state.untilMs === null || event.timestamp_ms <= state.untilMs;
+  const localInput = ms => Number.isFinite(ms) ? new Date(ms).getFullYear() + "-" + String(new Date(ms).getMonth() + 1).padStart(2, "0") + "-" + String(new Date(ms).getDate()).padStart(2, "0") + ":" + String(new Date(ms).getHours()).padStart(2, "0") + ":" + String(new Date(ms).getMinutes()).padStart(2, "0") + ":" + String(new Date(ms).getSeconds()).padStart(2, "0") : "";
+  function parseLocalInput(value) { const match = /^(\d{4})-(\d{2})-(\d{2}):(\d{2}):(\d{2}):(\d{2})$/.exec(value.trim()); if (!match) return null; const parts = match.slice(1).map(Number); const date = new Date(parts[0], parts[1] - 1, parts[2], parts[3], parts[4], parts[5]); return date.getFullYear() === parts[0] && date.getMonth() === parts[1] - 1 && date.getDate() === parts[2] && date.getHours() === parts[3] && date.getMinutes() === parts[4] && date.getSeconds() === parts[5] ? date.getTime() : null; }
 
   function fillControls() {
     const roleSelect = document.getElementById("role-filter");
@@ -45,10 +49,14 @@
     eventSelect.addEventListener("change", event => { state.eventKind = event.target.value; renderTrace(); renderTable(); });
     document.getElementById("search-filter").addEventListener("input", event => { state.search = event.target.value.trim().toLocaleLowerCase(); renderTrace(); renderTable(); });
     document.getElementById("reset-zoom").addEventListener("click", () => { state.domain = null; render(); });
+    const until = document.getElementById("until-filter");
+    until.value = localInput(state.untilMs);
+    document.getElementById("apply-until").addEventListener("click", () => { const value = parseLocalInput(until.value); if (value === null) { until.setCustomValidity("Используйте YYYY-MM-DD:HH:MM:SS"); until.reportValidity(); return; } until.setCustomValidity(""); state.untilMs = value; state.domain = null; render(); });
+    document.getElementById("clear-until").addEventListener("click", () => { state.untilMs = null; state.domain = null; until.value = ""; render(); });
   }
 
   function selectedSession() { return sessions.get(state.sessionId) || sessions.get(breakdown.root_session_id) || [...sessions.values()][0]; }
-  function activeDomain() { return state.domain || fullDomain; }
+  function activeDomain() { if (state.domain) return state.domain; const end = state.untilMs === null ? fullDomain[1] : Math.min(fullDomain[1], state.untilMs); return end >= fullDomain[0] ? [fullDomain[0], end] : [end - 1, end]; }
   function spanLabel(span) {
     if (span.kind !== "tool") return span.kind;
     const attrs = span.attributes || {}; const nested = Array.isArray(attrs.nested_calls) ? attrs.nested_calls[0] : null;
@@ -59,10 +67,11 @@
     return [...roles.entries()].filter(([role]) => !state.role || role === state.role).map(([role, list]) => [role, list.filter(session => !state.search || matchText(session.agent_path) || matchText(session.session_id))]).filter(([, list]) => list.length);
   }
   function xFor(value, width, domain) { return ((value - domain[0]) / Math.max(1, domain[1] - domain[0])) * width; }
+  function isClipped(span) { return state.untilMs !== null && Number.isFinite(span.end_ms) && span.end_ms > state.untilMs && Number.isFinite(span.start_ms) && span.start_ms <= state.untilMs; }
 
   function renderHeader() {
     const task = spans.find(span => span.kind === "task");
-    const cutoff = analysis.source && analysis.source.event_cutoff;
+    const cutoff = null;
     document.getElementById("trace-summary").textContent = `Root ${breakdown.root_session_id} · ${events.size} retained events${cutoff ? ` · since ${cutoff.local}` : ""} · source breakdown schema ${breakdown.schema_version} · span analysis ${analysis.analysis_version}`;
     document.getElementById("summary-cards").innerHTML = [
       ["Sessions", sessions.size], ["Events", events.size], ["Spans", spans.length], ["Wall clock", duration(task && task.duration_ms)]
@@ -90,16 +99,16 @@
     for (const row of rows) {
       const y = index++ * 28; if (row.role) { ctx.fillStyle="#edf3fc"; ctx.fillRect(0,y,width,26); continue; }
       const session = row.session; const sessionSpan = sessionSpans.get(session.session_id); ctx.fillStyle = session.session_id === state.sessionId ? "#dceaff" : "#f8fafc"; ctx.fillRect(0,y,width,27);
-      if (sessionSpan && Number.isFinite(sessionSpan.start_ms)) { const start=xFor(sessionSpan.start_ms,width,domain), end=xFor(sessionSpan.end_ms || sessionSpan.start_ms,width,domain); ctx.fillStyle="#a8c8fb"; ctx.fillRect(Math.max(0,start), y+10, Math.max(2,end-start), 8); }
+      if (sessionSpan && Number.isFinite(sessionSpan.start_ms) && (state.untilMs === null || sessionSpan.start_ms <= state.untilMs)) { const start=xFor(sessionSpan.start_ms,width,domain), end=xFor(state.untilMs === null ? (sessionSpan.end_ms || sessionSpan.start_ms) : Math.min(sessionSpan.end_ms || sessionSpan.start_ms, state.untilMs),width,domain); ctx.fillStyle="#a8c8fb"; ctx.fillRect(Math.max(0,start), y+10, Math.max(2,end-start), 8); if (isClipped(sessionSpan)) { ctx.strokeStyle="#d1762b"; ctx.lineWidth=1; ctx.beginPath(); ctx.moveTo(end+.5,y+8); ctx.lineTo(end+.5,y+20); ctx.stroke(); } }
       const showTurns = !state.spanKind || state.spanKind === "turn";
       if (showTurns) for (const span of spans.filter(item => item.kind === "turn" && item.session_id === session.session_id)) {
-        if (!Number.isFinite(span.start_ms)) continue; const start=xFor(span.start_ms,width,domain), end=xFor(span.end_ms || span.start_ms,width,domain); ctx.strokeStyle="#8e99aa"; ctx.lineWidth=1; ctx.strokeRect(Math.max(0,start)+.5, y+5.5, Math.max(3,end-start)-1, 17);
+        if (!Number.isFinite(span.start_ms) || (state.untilMs !== null && span.start_ms > state.untilMs)) continue; const start=xFor(span.start_ms,width,domain), end=xFor(state.untilMs === null ? (span.end_ms || span.start_ms) : Math.min(span.end_ms || span.start_ms, state.untilMs),width,domain); ctx.strokeStyle="#8e99aa"; ctx.lineWidth=1; ctx.strokeRect(Math.max(0,start)+.5, y+5.5, Math.max(3,end-start)-1, 17); if (isClipped(span)) { ctx.strokeStyle="#d1762b"; ctx.beginPath(); ctx.moveTo(end+.5,y+4); ctx.lineTo(end+.5,y+24); ctx.stroke(); }
       }
       const showTools = !state.spanKind || state.spanKind === "tool";
       if (showTools) for (const span of toolSpans.filter(item => item.session_id === session.session_id && matchText(spanLabel(item)))) {
-        if (!Number.isFinite(span.start_ms)) continue; const start=xFor(span.start_ms,width,domain), end=xFor(span.end_ms || span.start_ms,width,domain); ctx.fillStyle="#3278de"; ctx.fillRect(Math.max(0,start), y+7, Math.max(3,end-start), 14);
+        if (!Number.isFinite(span.start_ms) || (state.untilMs !== null && span.start_ms > state.untilMs)) continue; const start=xFor(span.start_ms,width,domain), end=xFor(state.untilMs === null ? (span.end_ms || span.start_ms) : Math.min(span.end_ms || span.start_ms, state.untilMs),width,domain); ctx.fillStyle="#3278de"; ctx.fillRect(Math.max(0,start), y+7, Math.max(3,end-start), 14); if (isClipped(span)) { ctx.strokeStyle="#f6c343"; ctx.lineWidth=1; ctx.beginPath(); ctx.moveTo(end+.5,y+5); ctx.lineTo(end+.5,y+23); ctx.stroke(); }
       }
-      const markers = (session.events || []).filter(event => Number.isFinite(event.timestamp_ms) && (!state.eventKind || event.kind === state.eventKind) && matchText(event.kind));
+      const markers = (session.events || []).filter(event => Number.isFinite(event.timestamp_ms) && visibleAt(event) && (!state.eventKind || event.kind === state.eventKind) && matchText(event.kind));
       for (const event of markers) { const x=xFor(event.timestamp_ms,width,domain); if (x < 0 || x > width) continue; ctx.fillStyle = event.kind === "token_count" ? "#8b53bf" : event.kind.includes("compacted") ? "#d1762b" : event.kind.includes("message") ? "#07846b" : "#44536b"; ctx.beginPath(); ctx.arc(x,y+14,2.5,0,Math.PI*2); ctx.fill(); }
     }
     let drag = null;
@@ -107,7 +116,7 @@
     canvas.onpointerup = event => { if (!drag) return; const dx=event.offsetX-drag.x; if (Math.abs(dx)>8) { const a=Math.max(0,Math.min(width,drag.x)), b=Math.max(0,Math.min(width,event.offsetX)); const current=activeDomain(); state.domain=[current[0]+(current[1]-current[0])*Math.min(a,b)/width,current[0]+(current[1]-current[0])*Math.max(a,b)/width]; render(); } else { const row=Math.floor(drag.y/28); const target=rows[row]; if (target && target.session) { state.sessionId=target.session.session_id; document.getElementById("session-filter").value=state.sessionId; render(); } } drag=null; };
   }
 
-  function tokenSeries(session, key, source) { return (session.events || []).filter(event => event.kind === "token_count" && Number.isFinite(event.timestamp_ms)).map(event => ({x:event.timestamp_ms, y:Number(eventDetails(event).info && eventDetails(event).info[source] && eventDetails(event).info[source][key]) || 0})); }
+  function tokenSeries(session, key, source) { return (session.events || []).filter(event => event.kind === "token_count" && Number.isFinite(event.timestamp_ms) && visibleAt(event)).map(event => ({x:event.timestamp_ms, y:Number(eventDetails(event).info && eventDetails(event).info[source] && eventDetails(event).info[source][key]) || 0})); }
   function drawChart(id, series, domain) {
     const canvas=document.getElementById(id), width=canvas.parentElement.clientWidth-18, height=canvas.clientHeight || 185, ctx=canvasSize(canvas,width,height); const visible=series.flatMap(item=>item.points).filter(point=>point.x>=domain[0]&&point.x<=domain[1]); const max=Math.max(1,...visible.map(point=>point.y)); ctx.clearRect(0,0,width,height); ctx.strokeStyle="#dfe6f0"; for(let i=0;i<4;i++){const y=18+(height-36)*i/3;ctx.beginPath();ctx.moveTo(35,y);ctx.lineTo(width-4,y);ctx.stroke();} ctx.fillStyle="#637188";ctx.font="10px Segoe UI";ctx.fillText(number(max),2,18);ctx.fillText("0",15,height-17);
     for (const item of series) { if (!state.enabled.has(item.key) || !item.points.length) continue; ctx.strokeStyle=item.color;ctx.lineWidth=1.7;ctx.beginPath();let moved=false; for(const point of item.points){if(point.x<domain[0]||point.x>domain[1])continue;const x=35+xFor(point.x,width-39,domain),y=height-18-(point.y/max)*(height-36);if(!moved){ctx.moveTo(x,y);moved=true;}else ctx.lineTo(x,y);}ctx.stroke(); }
@@ -115,19 +124,19 @@
 
   function renderMetrics() {
     const session=selectedSession(); if (!session) return; document.getElementById("metrics-title").textContent=`Кумулятивные метрики · ${session.agent_path || "user"}`; const domain=activeDomain(); let cumulative=0; const payloadPoints=[];
-    for(const event of session.events || []) { if(!Number.isFinite(event.timestamp_ms))continue; cumulative+=payload(event); payloadPoints.push({x:event.timestamp_ms,y:cumulative}); }
+    for(const event of session.events || []) { if(!Number.isFinite(event.timestamp_ms) || !visibleAt(event))continue; cumulative+=payload(event); payloadPoints.push({x:event.timestamp_ms,y:cumulative}); }
     drawChart("payload-chart", [{key:"payload",color:"#1f6feb",points:payloadPoints}],domain);
     drawChart("total-chart", TOKEN_KEYS.map(key=>({key,color:COLORS[key],points:tokenSeries(session,key,"total_token_usage")})),domain);
-    drawChart("last-chart", [...TOKEN_KEYS,"model_context_window"].map(key=>({key,color:COLORS[key],points:key==="model_context_window"?(session.events||[]).filter(event=>event.kind==="token_count"&&Number.isFinite(event.timestamp_ms)).map(event=>({x:event.timestamp_ms,y:Number(eventDetails(event).info&&eventDetails(event).info.model_context_window)||0})):tokenSeries(session,key,"last_token_usage")})),domain);
+    drawChart("last-chart", [...TOKEN_KEYS,"model_context_window"].map(key=>({key,color:COLORS[key],points:key==="model_context_window"?(session.events||[]).filter(event=>event.kind==="token_count"&&Number.isFinite(event.timestamp_ms)&&visibleAt(event)).map(event=>({x:event.timestamp_ms,y:Number(eventDetails(event).info&&eventDetails(event).info.model_context_window)||0})):tokenSeries(session,key,"last_token_usage")})),domain);
     document.getElementById("series-toggles").innerHTML=[...TOKEN_KEYS,"model_context_window"].map(key=>`<label><input data-series="${key}" type="checkbox" ${state.enabled.has(key)?"checked":""}><span style="color:${COLORS[key]}">■</span>${esc(key)}</label>`).join("");
     for(const box of document.querySelectorAll("[data-series]")) box.onchange=event=>{if(event.target.checked)state.enabled.add(event.target.dataset.series);else state.enabled.delete(event.target.dataset.series);renderMetrics();};
   }
 
   function operation(event, tool) { if (tool) return spanLabel(tool); const d=eventDetails(event); if ((event.kind||"").includes("message")) return [d.author,d.recipient].filter(Boolean).join(" → ") || event.kind; return event.kind || event.payload_type || event.outer_type; }
   function rowsFor(session) {
-    let cumulative=0; const cumulativeById=new Map(); for(const event of session.events || []) { cumulative+=payload(event); cumulativeById.set(event.event_id,cumulative); }
+    let cumulative=0; const cumulativeById=new Map(); for(const event of session.events || []) { if (!visibleAt(event)) continue; cumulative+=payload(event); cumulativeById.set(event.event_id,cumulative); }
     const linkedOutput=new Set(); for(const span of toolSpans.filter(span=>span.session_id===session.session_id)) for(const id of span.event_ids.slice(1)) linkedOutput.add(id);
-    return (session.events||[]).filter(event=>!linkedOutput.has(event.event_id)).map(event=>{const tool=toolByCall.get(event.event_id);const d=eventDetails(event), info=d.info||{}, last=info.last_token_usage||{}, total=info.total_token_usage||{};const endId=tool&&tool.end_event_id;return {event,tool,time:tool&&tool.end_ms||event.timestamp_ms,duration:tool?tool.duration_ms:event.duration&&event.duration.observed_ms,spanKind:tool?"tool":"event",eventKind:event.kind,op:operation(event,tool),inPayload:tool?tool.attributes.input_bytes:size(event,"input_size")||size(event,"arguments_size"),outPayload:tool?tool.attributes.output_bytes:size(event,"output_size"),cum:tool?cumulativeById.get(endId)||cumulativeById.get(event.event_id):cumulativeById.get(event.event_id),last,total};}).filter(row=>(!state.eventKind||row.eventKind===state.eventKind)&&matchText(`${row.op} ${row.eventKind}`));
+    return (session.events||[]).filter(event=>visibleAt(event)&&!linkedOutput.has(event.event_id)).map(event=>{const tool=toolByCall.get(event.event_id);const d=eventDetails(event), info=d.info||{}, last=info.last_token_usage||{}, total=info.total_token_usage||{};const endId=tool&&tool.end_event_id;const clipped=tool&&isClipped(tool);const end=tool ? (state.untilMs === null ? tool.end_ms : Math.min(tool.end_ms || tool.start_ms, state.untilMs)) : event.timestamp_ms;return {event,tool,time:end||event.timestamp_ms,duration:tool&&Number.isFinite(tool.start_ms)&&Number.isFinite(end)?Math.max(0,end-tool.start_ms):event.duration&&event.duration.observed_ms,spanKind:tool?"tool":"event",eventKind:event.kind,op:operation(event,tool),inPayload:tool?tool.attributes.input_bytes:size(event,"input_size")||size(event,"arguments_size"),outPayload:tool&&!clipped?tool.attributes.output_bytes:size(event,"output_size"),cum:tool&&clipped?cumulativeById.get(event.event_id):tool?cumulativeById.get(endId)||cumulativeById.get(event.event_id):cumulativeById.get(event.event_id),last,total};}).filter(row=>(!state.eventKind||row.eventKind===state.eventKind)&&matchText(`${row.op} ${row.eventKind}`));
   }
   function renderTable() { const session=selectedSession(); if(!session)return;const rows=rowsFor(session);document.getElementById("table-title").textContent=`Events · ${session.agent_path||"user"}`;document.getElementById("table-count").textContent=`${number(rows.length)} rows`;const cols=["Время","Длительность","Span kind","Event kind","Операция / участники","Payload input","Payload output","Payload cumulative","Last input","Last cached","Last cache write","Last output","Last reasoning","Total input","Total cached","Total cache write","Total output","Total reasoning"];const cell=(value,css="number")=>`<td class="${css}">${esc(value)}</td>`;const body=rows.map(row=>`<tr><td>${esc(shortTime(row.time))}</td>${cell(duration(row.duration),"")}${cell(row.spanKind,"")}${cell(row.eventKind,`kind-${row.eventKind}`)}${cell(row.op,"operation")}${cell(number(row.inPayload))}${cell(number(row.outPayload))}${cell(number(row.cum))}${cell(number(row.last.input_tokens))}${cell(number(row.last.cached_input_tokens))}${cell(number(row.last.cache_write_input_tokens))}${cell(number(row.last.output_tokens))}${cell(number(row.last.reasoning_output_tokens))}${cell(number(row.total.input_tokens))}${cell(number(row.total.cached_input_tokens))}${cell(number(row.total.cache_write_input_tokens))}${cell(number(row.total.output_tokens))}${cell(number(row.total.reasoning_output_tokens))}</tr>`).join("");document.getElementById("event-table").innerHTML=`<table><thead><tr>${cols.map(col=>`<th>${esc(col)}</th>`).join("")}</tr></thead><tbody>${body}</tbody></table>`; }
   function render() { renderTrace(); renderMetrics(); renderTable(); }

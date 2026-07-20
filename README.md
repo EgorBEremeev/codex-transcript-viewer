@@ -43,8 +43,7 @@ codex-transcript export SESSION --format jsonl --compact --redact --output sessi
 codex-transcript tree SESSION --format json
 codex-transcript raw SESSION --line 42 --redact
 codex-transcript breakdown SESSION --output breakdown.json
-codex-transcript analyze breakdown.json --since 2026-07-20:09:30:00 --output analysis/SESSION_ID
-codex-transcript visualize --spans analysis/SESSION_ID --output trace.html
+codex-transcript analyze breakdown.json --until 2026-07-20:09:30:00 --output analysis/SESSION_ID
 ```
 
 `--view conversation` reconciles duplicate log representations into the canonical user/assistant flow. Use `--last N` to bound recent context before reaching for raw normalized events.
@@ -53,7 +52,7 @@ codex-transcript visualize --spans analysis/SESSION_ID --output trace.html
 
 `breakdown` is a local-only JSON export for performance analysis of a root session and its subagent tree. It preserves every physical record (including each `token_count` snapshot), records native/inherited provenance, pairs tool calls with outputs, and stores content sizes instead of transcript bodies. A unique JSONL basename in the sessions directory is also accepted by local commands.
 
-`analyze` reads an immutable breakdown JSON and writes `spans.json`: task, session, turn, and linked tool spans. It keeps only event IDs and derived timing/size attributes, never a second copy of the events. `--since YYYY-MM-DD:HH:MM:SS` is an inclusive lower event boundary in the local time zone of the machine that runs `analyze`; older dated events are omitted from spans and the viewer, while timestamp-less records remain visible. `visualize --spans ANALYSIS_DIR` uses the breakdown path recorded by `analyze`; a positional breakdown remains available for older span files. It writes a self-contained local Trace HTML with the common time scale, cumulative payload/token graphs, and the numerical event table.
+`analyze` reads an immutable breakdown JSON and writes both `spans.json` and `trace.html` to its output directory: task, session, turn, and linked tool spans. `spans.json` always covers the complete breakdown and keeps only event IDs and derived timing/size attributes, never a second copy of the events. `--until YYYY-MM-DD:HH:MM:SS` stores an inclusive initial upper boundary for the viewer in the local time zone of the machine that runs `analyze`; it only hides later dated events in HTML, clips crossing spans at the right edge, and never changes span analysis. In the viewer, «Показывать до» can change or clear this boundary. `visualize --spans ANALYSIS_DIR` remains supported and uses the breakdown path recorded by `analyze`; a positional breakdown remains available for older span files.
 
 Remote sessions are fetched through `ssh-script`, parsed locally, and removed from private staging when the command finishes. Browser HTML, exports, and every other final output stay on the current machine; the remote session is never modified. Remote hosts need only Python 3 and a configured SSH alias. When supplied with a remote reference, `--sessions-dir` refers to the remote sessions directory.
 

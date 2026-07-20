@@ -21,6 +21,8 @@ class TraceHtmlTests(unittest.TestCase):
         self.assertIn('id="breakdown-data"', html)
         self.assertIn('id="spans-data"', html)
         self.assertIn("trace-canvas", html)
+        self.assertIn("isClipped", html)
+        self.assertIn("tool&&!clipped", html)
         self.assertIn("\\u003c/script", html)
         self.assertEqual(html.count("</script>"), 3)
         embedded = html.split('id="breakdown-data" type="application/json">', 1)[1].split("</script>", 1)[0]
@@ -36,7 +38,9 @@ class TraceHtmlTests(unittest.TestCase):
             with redirect_stdout(stdout):
                 cli.main(["analyze", str(breakdown), "--output", str(analysis_dir)])
             spans = analysis_dir / "spans.json"
+            trace = analysis_dir / "trace.html"
             self.assertTrue(spans.is_file())
+            self.assertTrue(trace.is_file())
             viewer = root / "trace.html"
             with redirect_stdout(stdout):
                 cli.main(["visualize", "--spans", str(analysis_dir), "--output", str(viewer)])
@@ -54,12 +58,23 @@ class TraceHtmlTests(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 cli.main(["visualize", str(second_path), "--spans", str(spans_path), "--output", str(root / "out.html")])
 
-    def test_cli_analyze_rejects_invalid_local_cutoff(self) -> None:
+    def test_cli_analyze_stores_until_without_filtering_spans(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            breakdown = Path(temp) / "breakdown.json"
+            breakdown.write_text(json.dumps(fixture()), encoding="utf-8")
+            output = Path(temp) / "analysis"
+            with redirect_stdout(io.StringIO()):
+                cli.main(["analyze", str(breakdown), "--until", "2026-07-20:00:00:03", "--output", str(output)])
+            analysis = json.loads((output / "spans.json").read_text(encoding="utf-8"))
+            self.assertEqual(analysis["included_event_count"], 7)
+            self.assertIn("until_ms", analysis["viewer_defaults"])
+
+    def test_cli_analyze_rejects_invalid_until(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             breakdown = Path(temp) / "breakdown.json"
             breakdown.write_text(json.dumps(fixture()), encoding="utf-8")
             with self.assertRaises(SystemExit):
-                cli.main(["analyze", str(breakdown), "--since", "2026-07-20T12:00:00"])
+                cli.main(["analyze", str(breakdown), "--until", "2026-07-20T12:00:00"])
 
 
 if __name__ == "__main__":

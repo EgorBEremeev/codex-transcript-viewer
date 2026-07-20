@@ -104,9 +104,7 @@ def _tool_attributes(call: dict[str, Any], outputs: list[dict[str, Any]]) -> dic
     }
 
 
-def build_spans(
-    breakdown: dict[str, Any], *, cutoff_ms: int | None = None, cutoff_local: str | None = None
-) -> dict[str, Any]:
+def build_spans(breakdown: dict[str, Any]) -> dict[str, Any]:
     """Create a compact, reproducible span projection without copying raw events."""
     if not isinstance(breakdown, dict) or not isinstance(breakdown.get("sessions"), list):
         raise ValueError("input is not a breakdown dataset with sessions")
@@ -120,7 +118,6 @@ def build_spans(
     events_by_id: dict[str, dict[str, Any]] = {}
     sessions_by_id: dict[str, dict[str, Any]] = {}
     events_by_session_turn: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
-    excluded_event_count = 0
 
     for session in breakdown["sessions"]:
         if not isinstance(session, dict):
@@ -129,24 +126,17 @@ def build_spans(
         if not isinstance(session_id, str) or not session_id:
             warnings.append("session without session_id was skipped")
             continue
-        retained = False
         for event in session.get("events", []):
             if not isinstance(event, dict) or not isinstance(event.get("event_id"), str):
                 continue
             event_id = event["event_id"]
             if event_id in events_by_id:
                 raise ValueError(f"duplicate event_id in breakdown: {event_id}")
-            timestamp_ms = event.get("timestamp_ms")
-            if cutoff_ms is not None and isinstance(timestamp_ms, int) and timestamp_ms < cutoff_ms:
-                excluded_event_count += 1
-                continue
             events_by_id[event_id] = event
-            retained = True
             turn_id = event.get("turn_id")
             if isinstance(turn_id, str) and turn_id:
                 events_by_session_turn[(session_id, turn_id)].append(event)
-        if retained:
-            sessions_by_id[session_id] = session
+        sessions_by_id[session_id] = session
 
     all_events = list(events_by_id.values())
     task_start, task_end = _event_bounds(all_events)
@@ -245,15 +235,10 @@ def build_spans(
             "root_session_id": root_id,
             "breakdown_schema_version": breakdown.get("schema_version"),
             "breakdown_sha256": breakdown_sha256(breakdown),
-            "event_cutoff": (
-                {"local": cutoff_local, "timestamp_ms": cutoff_ms}
-                if cutoff_ms is not None
-                else None
-            ),
         },
         "spans": spans,
         "event_to_span": dict(sorted(event_to_span.items())),
         "included_event_count": len(events_by_id),
-        "excluded_event_count": excluded_event_count,
+        "excluded_event_count": 0,
         "warnings": warnings,
     }
