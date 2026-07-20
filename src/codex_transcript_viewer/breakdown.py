@@ -154,8 +154,11 @@ def _decode_command(argument: str) -> str | None:
     for pattern in (
         r'"command"\s*:\s*"((?:\\.|[^"\\])*)"',
         r"'command'\s*:\s*'((?:\\.|[^'\\])*)'",
+        r'"command"\s*:\s*`((?:\\.|[^`\\])*)`',
+        r"'command'\s*:\s*`((?:\\.|[^`\\])*)`",
         r'\bcommand\s*:\s*"((?:\\.|[^"\\])*)"',
         r"\bcommand\s*:\s*'((?:\\.|[^'\\])*)'",
+        r'\bcommand\s*:\s*`((?:\\.|[^`\\])*)`',
     ):
         match = re.search(pattern, argument, re.S)
         if not match:

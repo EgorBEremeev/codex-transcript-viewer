@@ -110,6 +110,11 @@ class BreakdownTests(unittest.TestCase):
         self.assertEqual(_decode_command('{command:"Get-Content C:\\\\repo\\\\file.txt"}'), r"Get-Content C:\repo\file.txt")
         self.assertEqual(_decode_command("{command:'Get-Content C:\\\\repo\\\\file.txt'}"), r"Get-Content C:\repo\file.txt")
 
+    def test_decode_command_preserves_template_literal_interpolation(self) -> None:
+        command = _decode_command(r"{command:`wam_mplan find --request ${req} --scope ${scope}`}")
+        self.assertEqual(command, "wam_mplan find --request ${req} --scope ${scope}")
+        self.assertEqual(command.split()[0], "wam_mplan")
+
     def test_cli_emits_dataset_for_unique_basename(self) -> None:
         stdout = io.StringIO()
         with redirect_stdout(stdout):
