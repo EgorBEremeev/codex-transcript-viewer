@@ -86,6 +86,7 @@ def _tool_attributes(call: dict[str, Any], outputs: list[dict[str, Any]]) -> dic
             "tool": item.get("tool"),
             "command_name": item.get("command_name"),
             "command_label": item.get("command_label"),
+            "command_arguments": item.get("command_arguments"),
             "command_operation": item.get("command_operation"),
             "extraction": deepcopy(item.get("extraction")),
         }
