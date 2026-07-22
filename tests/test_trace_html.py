@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import json
 import tempfile
+import shutil
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -23,10 +24,13 @@ class TraceHtmlTests(unittest.TestCase):
         self.assertIn("trace-canvas", html)
         self.assertIn("isClipped", html)
         self.assertIn("tool&&!clipped", html)
-        self.assertIn('const calls = nested.map(call => [call && call.tool, call && call.command_name].filter(Boolean).join(" → ")).filter(Boolean);', html)
+        self.assertIn('call && (call.command_label || call.command_name)', html)
         self.assertIn('return calls.length ? [name, ...calls].join(" → ") : name;', html)
         self.assertIn("Get-Content", html)
         self.assertIn("Select-String", html)
+        self.assertIn('id="download-events-csv"', html)
+        self.assertIn("downloadVisibleEventsCsv", html)
+        self.assertIn('event.kind === "sub_agent_activity"', html)
         self.assertIn('points:payloadPoints,alwaysVisible:true', html)
         self.assertIn('(!item.alwaysVisible && !state.enabled.has(item.key))', html)
         self.assertIn("\\u003c/script", html)
@@ -47,6 +51,10 @@ class TraceHtmlTests(unittest.TestCase):
             trace = analysis_dir / "trace.html"
             self.assertTrue(spans.is_file())
             self.assertTrue(trace.is_file())
+            self.assertTrue((analysis_dir / "root-session-breakdown.json").is_file())
+            self.assertTrue((analysis_dir / "root-session-sessions-metrics.json").is_file())
+            self.assertTrue((analysis_dir / "sessions_table.csv").is_file())
+            self.assertTrue((analysis_dir / "events_table.csv").is_file())
             viewer = root / "trace.html"
             with redirect_stdout(stdout):
                 cli.main(["visualize", "--spans", str(analysis_dir), "--output", str(viewer)])
@@ -74,6 +82,21 @@ class TraceHtmlTests(unittest.TestCase):
             analysis = json.loads((output / "spans.json").read_text(encoding="utf-8"))
             self.assertEqual(analysis["included_event_count"], 7)
             self.assertIn("until_ms", analysis["viewer_defaults"])
+
+    def test_visualize_uses_sibling_breakdown_after_analysis_directory_moves(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            breakdown = root / "breakdown.json"
+            breakdown.write_text(json.dumps(fixture()), encoding="utf-8")
+            first = root / "first"
+            moved = root / "moved"
+            with redirect_stdout(io.StringIO()):
+                cli.main(["analyze", str(breakdown), "--output", str(first)])
+            shutil.move(str(first), moved)
+            output = root / "trace.html"
+            with redirect_stdout(io.StringIO()):
+                cli.main(["visualize", "--spans", str(moved), "--output", str(output)])
+            self.assertTrue(output.is_file())
 
     def test_cli_analyze_rejects_invalid_until(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

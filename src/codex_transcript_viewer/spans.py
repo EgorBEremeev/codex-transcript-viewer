@@ -85,6 +85,8 @@ def _tool_attributes(call: dict[str, Any], outputs: list[dict[str, Any]]) -> dic
         {
             "tool": item.get("tool"),
             "command_name": item.get("command_name"),
+            "command_label": item.get("command_label"),
+            "command_operation": item.get("command_operation"),
             "extraction": deepcopy(item.get("extraction")),
         }
         for item in nested
@@ -102,6 +104,33 @@ def _tool_attributes(call: dict[str, Any], outputs: list[dict[str, Any]]) -> dic
         "input_bytes": _content_bytes(call, "input_size") or _content_bytes(call, "arguments_size"),
         "output_bytes": sum(_content_bytes(event, "output_size") for event in outputs),
     }
+
+
+def _completed_turns(events: list[dict[str, Any]], legacy: Any) -> dict[str, dict[str, Any]]:
+    """Derive completed turn boundaries from raw events (legacy data may carry them)."""
+    result = {
+        str(turn.get("turn_id")): turn
+        for turn in legacy if isinstance(turn, dict) and isinstance(turn.get("turn_id"), str)
+    } if isinstance(legacy, list) else {}
+    starts: dict[str, dict[str, Any]] = {}
+    for event in events:
+        turn_id = event.get("turn_id")
+        if not isinstance(turn_id, str) or not turn_id:
+            continue
+        if event.get("payload_type") == "task_started":
+            starts[turn_id] = event
+        elif event.get("payload_type") in {"task_complete", "turn_aborted"} and turn_id in starts:
+            start = starts.pop(turn_id)
+            details = event.get("details") if isinstance(event.get("details"), dict) else {}
+            result[turn_id] = {
+                "turn_id": turn_id,
+                "start_event_id": start.get("event_id"),
+                "end_event_id": event.get("event_id"),
+                "duration_ms": event.get("duration", {}).get("reported_ms") or details.get("duration_ms"),
+                "time_to_first_token_ms": details.get("time_to_first_token_ms"),
+                "outcome": "completed" if event.get("payload_type") == "task_complete" else "aborted",
+            }
+    return result
 
 
 def build_spans(breakdown: dict[str, Any]) -> dict[str, Any]:
@@ -172,11 +201,7 @@ def build_spans(breakdown: dict[str, Any]) -> dict[str, Any]:
         for event_id in span["event_ids"]:
             event_to_span[event_id].append(span["span_id"])
 
-        completed_turns = {
-            turn.get("turn_id"): turn
-            for turn in session.get("turns", [])
-            if isinstance(turn, dict) and isinstance(turn.get("turn_id"), str)
-        }
+        completed_turns = _completed_turns(events, session.get("turns"))
         known_turn_ids = set(completed_turns) | {turn_id for current_session, turn_id in events_by_session_turn if current_session == session_id}
         for turn_id in sorted(known_turn_ids):
             turn_events = sorted(events_by_session_turn[(session_id, turn_id)], key=lambda event: (event.get("timestamp_ms") is None, event.get("timestamp_ms") or 0, event.get("line", 0)))
@@ -228,6 +253,24 @@ def build_spans(breakdown: dict[str, Any]) -> dict[str, Any]:
             spans.append(tool_span)
             for event_id in tool_span["event_ids"]:
                 event_to_span[event_id].append(tool_span["span_id"])
+
+        ordered_events = sorted(events, key=lambda event: (event.get("timestamp_ms") is None, event.get("timestamp_ms") or 0, event.get("line", 0)))
+        previous: dict[str, Any] | None = None
+        for event in ordered_events:
+            if event.get("kind") == "reasoning":
+                turn_id = event.get("turn_id") if isinstance(event.get("turn_id"), str) and event.get("turn_id") else None
+                parent = f"turn:{session_id}:{turn_id}" if turn_id else span["span_id"]
+                reasoning_span = _span(
+                    f"reasoning:{event['event_id']}", "reasoning", parent_span_id=parent,
+                    session_id=session_id, turn_id=turn_id,
+                    event_ids=[item["event_id"] for item in (previous, event) if item is not None],
+                    start=previous, end=event,
+                    attributes={"previous_event_id": previous.get("event_id") if previous else None},
+                )
+                spans.append(reasoning_span)
+                for event_id in reasoning_span["event_ids"]:
+                    event_to_span[event_id].append(reasoning_span["span_id"])
+            previous = event
 
     return {
         "analysis_version": SPAN_ANALYSIS_VERSION,

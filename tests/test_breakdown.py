@@ -9,7 +9,7 @@ import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
 
-from codex_transcript_viewer.breakdown import _decode_command, build_breakdown
+from codex_transcript_viewer.breakdown import _command_invocations, _decode_command, build_breakdown
 from codex_transcript_viewer import cli
 from codex_transcript_viewer.discovery import resolve_session
 
@@ -70,7 +70,7 @@ class BreakdownTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temp.cleanup()
 
-    def test_breakdown_preserves_events_tokens_context_and_tool_metrics(self) -> None:
+    def test_breakdown_preserves_raw_events_tokens_and_tool_links_without_metrics(self) -> None:
         data = build_breakdown(ROOT_ID, self.root)
         self.assertEqual(data["root_session_id"], ROOT_ID)
         self.assertEqual([session["session_id"] for session in data["sessions"]], [ROOT_ID, CHILD_ID])
@@ -84,8 +84,9 @@ class BreakdownTests(unittest.TestCase):
         self.assertEqual(tokens[0]["record_origin"], "inherited")
         self.assertEqual(tokens[2]["details"]["is_duplicate_snapshot"], True)
         self.assertEqual(tokens[2]["details"]["duplicate_of_event_id"], tokens[1]["event_id"])
-        self.assertEqual(child["metrics"]["reported_token_usage"]["snapshot_count"], 2)
-        self.assertEqual(child["metrics"]["reported_token_usage"]["last_cumulative"]["total_tokens"], 100)
+        self.assertNotIn("metrics", child)
+        self.assertNotIn("turns", child)
+        self.assertNotIn("tree_metrics", data)
 
         call = next(event for event in child["events"] if event["kind"] == "tool_call")
         output = next(event for event in child["events"] if event["kind"] == "tool_output")
@@ -114,6 +115,34 @@ class BreakdownTests(unittest.TestCase):
         command = _decode_command(r"{command:`wam_mplan find --request ${req} --scope ${scope}`}")
         self.assertEqual(command, "wam_mplan find --request ${req} --scope ${scope}")
         self.assertEqual(command.split()[0], "wam_mplan")
+
+    def test_nested_command_projection_handles_python_git_and_wam_mplan(self) -> None:
+        python = _command_invocations("@'\nfrom pathlib import Path\n'@ | & 'C:\\repo\\venv\\Scripts\\python.exe' -")
+        self.assertEqual(python[0]["command_name"], "python")
+        self.assertEqual(python[0]["command_kind"], "python_stdin_script")
+
+        git = _command_invocations("git diff --numstat -- file.txt; git status --short")
+        self.assertEqual([item["command_operation"] for item in git], ["diff", "status"])
+        self.assertEqual(git[0]["command_label"], "git diff --numstat -- file.txt")
+
+        wam = _command_invocations("wam_mplan find master-plan/flow.yaml --where state=ready --limit 10 --collection records --format json")[0]
+        self.assertEqual(wam["command_operation"], "find")
+        self.assertEqual(wam["store_path"], "master-plan/flow.yaml")
+        self.assertEqual(wam["where"], ["state=ready"])
+        self.assertEqual(wam["limit"], "10")
+
+    def test_command_projection_handles_windows_paths_and_wam_options(self) -> None:
+        python = _command_invocations("@'\nfrom pathlib import Path\n'@ | & 'C:\\Program Files\\Python\\python.exe' -")
+        self.assertEqual(python[0]["command_name"], "python")
+        self.assertEqual(python[0]["command_path"], r"C:\Program Files\Python\python.exe")
+
+        git = _command_invocations("git -C repo --no-pager status --short")[0]
+        self.assertEqual(git["command_operation"], "status")
+        self.assertEqual(git["git_global_options"], ["-C", "repo", "--no-pager"])
+
+        wam = _command_invocations("wam_mplan.exe get master-plan/flow.yaml EXE-1 --format json")[0]
+        self.assertEqual(wam["identities"], ["EXE-1"])
+        self.assertEqual(wam["format"], "json")
 
     def test_cli_emits_dataset_for_unique_basename(self) -> None:
         stdout = io.StringIO()

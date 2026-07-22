@@ -15,7 +15,7 @@ from .discovery import build_tree, read_session_meta
 from .parser import _native_boundary
 
 
-BREAKDOWN_SCHEMA_VERSION = 1
+BREAKDOWN_SCHEMA_VERSION = 2
 _WALL_TIME = re.compile(r"\bWall time\s+([0-9]+(?:\.[0-9]+)?)\s*seconds?\b", re.I)
 _NESTED_TOOL = re.compile(r"\btools\.([A-Za-z_][A-Za-z0-9_]*)\s*\(")
 
@@ -140,14 +140,118 @@ def _inventory(payload: Any) -> dict[str, Any]:
     return {"payload_shape": type(payload).__name__}
 
 
-def _extract_command_name(command: str) -> str | None:
-    for segment in re.split(r"[;|\r\n]+", command):
-        segment = segment.strip()
-        segment = re.sub(r"^(?:\$?[A-Za-z_][\w:]*\s*=\s*[^;]+\s*)+", "", segment)
-        match = re.search(r"[A-Za-z][A-Za-z0-9_-]*", segment)
+def _command_label(name: str, arguments: str) -> str:
+    return f"{name} {arguments}".strip()
+
+
+def _command_segments(command: str) -> list[str]:
+    """Split a PowerShell command without cutting quoted arguments."""
+    segments: list[str] = []
+    start = 0
+    quote = ""
+    for index, char in enumerate(command):
+        if quote:
+            if char == quote:
+                quote = ""
+            continue
+        if char in {"'", '"', "`"}:
+            quote = char
+        elif char in {";", "|", "\r", "\n"}:
+            segment = command[start:index].strip()
+            if segment:
+                segments.append(segment)
+            start = index + 1
+    tail = command[start:].strip()
+    if tail:
+        segments.append(tail)
+    return segments
+
+
+def _parse_wam_mplan(segment: str) -> dict[str, Any] | None:
+    match = re.search(r"\bwam_mplan(?:\.exe)?\s+(get-many|get|find|tail|validate-store)\b\s*(.*)", segment, re.I | re.S)
+    if not match:
+        return None
+    operation, remainder = match.groups()
+    tokens = re.findall(r"(?:[^\s\"']+|\"[^\"]*\"|'[^']*')+", remainder)
+    result: dict[str, Any] = {
+        "command_name": "wam_mplan",
+        "command_operation": operation,
+        "command_arguments": remainder.strip(),
+        "command_label": _command_label("wam_mplan", f"{operation} {remainder.strip()}"),
+    }
+    if tokens:
+        result["store_path"] = tokens[0].strip("\"'")
+    positionals: list[str] = []
+    options: dict[str, list[str]] = {}
+    index = 1
+    while index < len(tokens):
+        token = tokens[index].strip("\"'")
+        if token.startswith("--"):
+            key, separator, value = token[2:].partition("=")
+            if not separator:
+                value = tokens[index + 1].strip("\"'") if index + 1 < len(tokens) else ""
+                index += 1
+            options.setdefault(key, []).append(value)
+        else:
+            positionals.append(token)
+        index += 1
+    if operation in {"get", "get-many"}:
+        result["identities"] = positionals
+    if operation == "find":
+        result["where"] = options.get("where", [])
+        result["limit"] = next(iter(options.get("limit", [])), None)
+        result["collection"] = next(iter(options.get("collection", [])), None)
+    if operation == "tail":
+        result["count"] = next(iter(options.get("count", [])), None)
+    result["format"] = next(iter(options.get("format", [])), None)
+    return result
+
+
+def _command_invocations(command: str) -> list[dict[str, Any]]:
+    """Project common nested shell invocations into a stable, useful shape."""
+    heredoc_python = re.search(r"@(?P<quote>['\"])[\s\S]*?(?P=quote)@\s*\|\s*&?\s*(?:'(?P<single>[^']*python(?:\.exe)?)'|\"(?P<double>[^\"]*python(?:\.exe)?)\"|(?P<bare>[^\s]+python(?:\.exe)?))\s+-", command, re.I)
+    if heredoc_python:
+        return [{
+            "command_name": "python",
+            "command_label": "python (stdin script)",
+            "command_path": next(value for value in heredoc_python.group("single", "double", "bare") if value is not None),
+            "command_kind": "python_stdin_script",
+        }]
+    result: list[dict[str, Any]] = []
+    for segment in _command_segments(command):
+        wam = _parse_wam_mplan(segment)
+        if wam is not None:
+            result.append(wam)
+            continue
+        git = re.search(r"(?:^|\s)git(?:\.exe)?\s+(.*)$", segment, re.I | re.S)
+        if git:
+            tokens = re.findall(r"(?:[^\s\"']+|\"[^\"]*\"|'[^']*')+", git.group(1))
+            index = 0
+            global_options: list[str] = []
+            options_with_value = {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--config-env"}
+            while index < len(tokens) and tokens[index].startswith("-"):
+                option = tokens[index]
+                global_options.append(option)
+                if option in options_with_value and index + 1 < len(tokens):
+                    index += 1
+                    global_options.append(tokens[index])
+                index += 1
+            operation = tokens[index] if index < len(tokens) else ""
+            arguments = " ".join(tokens[index + 1:]) if operation else " ".join(tokens)
+            result.append({"command_name": "git", "command_operation": operation or None, "command_arguments": arguments, "command_label": _command_label("git", f"{operation} {arguments}"), "git_global_options": global_options})
+            continue
+        python = re.search(r"(?:^|\s)&?\s*['\"]?([A-Za-z]:[^'\"\s]*\\python(?:\.exe)?|[^'\"\s]*python(?:\.exe)?)['\"]?(?:\s|$)(.*)", segment, re.I | re.S)
+        if python:
+            executable, arguments = python.groups()
+            result.append({"command_name": "python", "command_path": executable, "command_arguments": arguments.strip(), "command_label": _command_label("python", arguments.strip())})
+            continue
+        cleaned = re.sub(r"^(?:\$?[A-Za-z_][\w:]*\s*=\s*[^;]+\s*)+", "", segment).lstrip("& ")
+        match = re.search(r"[A-Za-z][A-Za-z0-9_-]*", cleaned)
         if match:
-            return match.group(0)
-    return None
+            name = match.group(0)
+            arguments = cleaned[match.end():].strip()
+            result.append({"command_name": name, "command_arguments": arguments, "command_label": _command_label(name, arguments)})
+    return result
 
 
 def _decode_command(argument: str) -> str | None:
@@ -206,18 +310,20 @@ def _nested_calls(source: Any) -> list[dict[str, Any]]:
             continue
         tool = match.group(1)
         command = _decode_command(argument) if tool == "shell_command" else None
-        item: dict[str, Any] = {
-            "tool": tool,
-            "extraction": {"method": "balanced_call_scan", "confidence": "high"},
-        }
-        if command is not None:
-            item.update({
-                "command_name": _extract_command_name(command),
-                "command_preview": command[:128],
-                "command_chars": len(command),
-                "command_sha256": hashlib.sha256(command.encode("utf-8")).hexdigest(),
-            })
-        result.append(item)
+        projections = _command_invocations(command) if command is not None else [{}]
+        for projection in projections:
+            item: dict[str, Any] = {
+                "tool": tool,
+                "extraction": {"method": "balanced_call_scan", "confidence": "high"},
+                **projection,
+            }
+            if command is not None:
+                item.update({
+                    "command_preview": command[:128],
+                    "command_chars": len(command),
+                    "command_sha256": hashlib.sha256(command.encode("utf-8")).hexdigest(),
+                })
+            result.append(item)
     return result
 
 
@@ -233,32 +339,6 @@ def _has_negative_number(value: Any) -> bool:
     if isinstance(value, dict):
         return any(_has_negative_number(item) for item in value.values())
     return isinstance(value, (int, float)) and value < 0
-
-
-def _add_context_metric(target: dict[str, int], size: dict[str, Any], *, encrypted: int = 0) -> None:
-    target["text_chars"] += int(size.get("text_chars") or 0)
-    target["utf8_bytes"] += int(size.get("utf8_bytes") or 0)
-    target["serialized_json_chars"] += int(size.get("serialized_json_chars") or 0)
-    target["encrypted_chars"] += encrypted
-
-
-def _context_summary(events: list[dict[str, Any]]) -> dict[str, Any]:
-    totals = {
-        origin: {"text_chars": 0, "utf8_bytes": 0, "serialized_json_chars": 0, "encrypted_chars": 0}
-        for origin in ("native", "inherited", "unknown")
-    }
-    by_kind: Counter[str] = Counter()
-    for event in events:
-        origin = event["record_origin"]
-        details = event["details"]
-        for label in ("input_size", "arguments_size", "output_size", "content_size", "message_size", "summary_size"):
-            size = details.get(label)
-            if isinstance(size, dict):
-                encrypted = sum(int(block.get("encrypted_content_chars") or 0) for block in size.get("blocks", []))
-                _add_context_metric(totals[origin], size, encrypted=encrypted)
-                by_kind[label] += int(size.get("text_chars") or 0)
-        totals[origin]["encrypted_chars"] += int(details.get("encrypted_content_chars") or 0)
-    return {**totals, "by_content_kind": dict(sorted(by_kind.items()))}
 
 
 def _event_details(outer_type: str, payload_type: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -378,7 +458,6 @@ def _parse_session(path: Path, node: dict[str, Any]) -> tuple[dict[str, Any], li
 
     _derive_tool_links(events, warnings)
     _derive_tokens(events)
-    turns = _turn_spans(events)
     events.sort(key=lambda event: (event["timestamp_ms"] is None, event["timestamp_ms"] or 0, event["line"]))
     scope = Counter(event["record_origin"] for event in events)
     session = {
@@ -389,8 +468,6 @@ def _parse_session(path: Path, node: dict[str, Any]) -> tuple[dict[str, Any], li
         "meta": _safe_meta(meta),
         "meta_snapshots": meta_snapshots,
         "record_scope": {"source_records": len(events), "native_records": scope["native"], "inherited_records": scope["inherited"], "unknown_records": scope["unknown"], "native_boundary_line": boundary},
-        "metrics": _session_metrics(events),
-        "turns": turns,
         "events": events,
     }
     return session, warnings
@@ -444,87 +521,8 @@ def _derive_tokens(events: list[dict[str, Any]]) -> None:
         previous, previous_id = deepcopy(total), event["event_id"]
 
 
-def _turn_spans(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    starts: dict[str, dict[str, Any]] = {}
-    spans = []
-    for event in events:
-        turn_id = event["turn_id"]
-        if not turn_id:
-            continue
-        if event["payload_type"] == "task_started":
-            starts[turn_id] = event
-        elif event["payload_type"] in {"task_complete", "turn_aborted"} and turn_id in starts:
-            start = starts.pop(turn_id)
-            spans.append({
-                "turn_id": turn_id,
-                "start_at": start["timestamp"],
-                "end_at": event["timestamp"],
-                "duration_ms": event["details"].get("duration_ms"),
-                "time_to_first_token_ms": event["details"].get("time_to_first_token_ms"),
-                "outcome": "completed" if event["payload_type"] == "task_complete" else "aborted",
-                "start_event_id": start["event_id"],
-                "end_event_id": event["event_id"],
-            })
-    return spans
-
-
-def _session_metrics(events: list[dict[str, Any]]) -> dict[str, Any]:
-    native = [event for event in events if event["record_origin"] == "native"]
-    token_events = [event for event in native if event["payload_type"] == "token_count"]
-    cumulative = {}
-    if token_events:
-        cumulative = deepcopy(token_events[-1]["details"].get("info", {}).get("total_token_usage") or {})
-    return {
-        "events": {"native_by_kind": dict(Counter(event["kind"] for event in native)), "all_by_kind": dict(Counter(event["kind"] for event in events))},
-        "context_material": _context_summary(events),
-        "reported_token_usage": {"snapshot_count": len(token_events), "last_cumulative": cumulative, "resets": [event["event_id"] for event in token_events if event["details"].get("reset_detected")]},
-        "tools": {"native_calls": sum(event["kind"] == "tool_call" for event in native), "native_outputs": sum(event["kind"] == "tool_output" for event in native)},
-    }
-
-
-def _add_numeric(target: dict[str, Any], value: Any) -> None:
-    if not isinstance(value, dict):
-        return
-    for key, item in value.items():
-        if isinstance(item, dict):
-            nested = target.setdefault(key, {})
-            if isinstance(nested, dict):
-                _add_numeric(nested, item)
-        elif isinstance(item, (int, float)):
-            target[key] = target.get(key, 0) + item
-
-
-def _tree_metrics(sessions: list[dict[str, Any]], timeline: list[dict[str, Any]]) -> dict[str, Any]:
-    dated = [item for item in timeline if item["timestamp_ms"] is not None]
-    timed = [item["timestamp_ms"] for item in dated]
-    event_counts: Counter[str] = Counter()
-    tool_calls = 0
-    tool_outputs = 0
-    token_usage: dict[str, Any] = {}
-    context: dict[str, Any] = {}
-    for session in sessions:
-        metrics = session["metrics"]
-        event_counts.update(metrics["events"]["native_by_kind"])
-        tool_calls += metrics["tools"]["native_calls"]
-        tool_outputs += metrics["tools"]["native_outputs"]
-        _add_numeric(token_usage, metrics["reported_token_usage"]["last_cumulative"])
-        _add_numeric(context, metrics["context_material"])
-    return {
-        "wall_clock": {
-            "started_at": dated[0]["timestamp"] if dated else "",
-            "ended_at": dated[-1]["timestamp"] if dated else "",
-            "duration_ms": max(timed) - min(timed) if timed else None,
-        },
-        "session_count": len(sessions),
-        "events": {"native_by_kind": dict(event_counts), "native_total": sum(event_counts.values())},
-        "tools": {"native_calls": tool_calls, "native_outputs": tool_outputs},
-        "reported_token_usage": {"sum_session_cumulative": token_usage},
-        "context_material": context,
-    }
-
-
 def build_breakdown(reference: str, sessions_dir: str | Path | None = None) -> dict[str, Any]:
-    """Return a lossless analytics dataset for a local root session and descendants."""
+    """Return a lossless raw event tree for a local root session and descendants."""
     tree = build_tree(reference, sessions_dir)
     sessions = []
     warnings: list[str] = []
@@ -540,7 +538,6 @@ def build_breakdown(reference: str, sessions_dir: str | Path | None = None) -> d
     return {
         "schema_version": BREAKDOWN_SCHEMA_VERSION,
         "root_session_id": tree["root_id"],
-        "tree_metrics": _tree_metrics(sessions, timeline),
         "sessions": sessions,
         "timeline": timeline,
         "warnings": warnings,

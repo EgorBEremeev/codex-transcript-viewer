@@ -358,6 +358,16 @@ class CliTests(unittest.TestCase):
         self.assertEqual(data["newest_root"]["id"], ROOT_ID)
         self.assertNotIn("latest_root", data)
 
+    def test_analyze_accepts_session_reference_and_writes_all_artifacts_together(self) -> None:
+        output = self.root / "analysis"
+        with redirect_stdout(io.StringIO()):
+            cli.main(["--sessions-dir", str(self.root), "analyze", "root.jsonl", "--output", str(output)])
+        expected = {
+            f"{ROOT_ID}-breakdown.json", f"{ROOT_ID}-sessions-metrics.json",
+            "spans.json", "sessions_table.csv", "events_table.csv", "trace.html",
+        }
+        self.assertEqual({path.name for path in output.iterdir()}, expected)
+
 
 if __name__ == "__main__":
     unittest.main()

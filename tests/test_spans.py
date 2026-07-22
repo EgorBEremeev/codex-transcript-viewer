@@ -88,6 +88,15 @@ class SpanTests(unittest.TestCase):
         self.assertEqual(root_span["start_event_id"], f"{ROOT}:1")
         self.assertTrue(any(span["kind"] == "tool" and span["session_id"] == ROOT for span in result["spans"]))
 
+    def test_reasoning_span_starts_at_the_preceding_event(self) -> None:
+        data = fixture()
+        data["sessions"][0]["events"].append(event(f"{ROOT}:6", 6, "reasoning", turn_id=TURN))
+        result = build_spans(data)
+        reasoning = next(span for span in result["spans"] if span["kind"] == "reasoning")
+        self.assertEqual(reasoning["start_event_id"], f"{ROOT}:5")
+        self.assertEqual(reasoning["end_event_id"], f"{ROOT}:6")
+        self.assertEqual(reasoning["duration_ms"], 1000)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -12,9 +12,11 @@ class BreakdownSchemaTests(unittest.TestCase):
     def test_schema_is_valid_json_and_declares_current_version(self) -> None:
         schema = json.loads(SCHEMA.read_text(encoding="utf-8"))
         self.assertEqual(schema["$schema"], "https://json-schema.org/draft/2020-12/schema")
-        self.assertEqual(schema["properties"]["schema_version"], {"const": 1})
+        self.assertEqual(schema["properties"]["schema_version"], {"const": 2})
         self.assertIn("sessions", schema["required"])
         self.assertIn("events", schema["$defs"]["session"]["required"])
+        self.assertNotIn("tree_metrics", schema["required"])
+        self.assertNotIn("metrics", schema["$defs"]["session"]["required"])
 
 
 if __name__ == "__main__":

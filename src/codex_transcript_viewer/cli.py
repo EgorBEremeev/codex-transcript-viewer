@@ -25,6 +25,8 @@ from .discovery import (
     session_summary,
 )
 from .breakdown import build_breakdown
+from .metrics import build_sessions_metrics
+from .reports import build_events_table_csv, build_sessions_table_csv
 from .html_builder import build_html
 from .parser import SCHEMA_VERSION, iter_normalized, load_conversation
 from .spans import breakdown_sha256, build_spans
@@ -377,22 +379,46 @@ def _local_cutoff(value: str) -> tuple[int, str]:
     return round(local.timestamp() * 1000), local.isoformat()
 
 
-def _analyze_breakdown(path_value: str, args: argparse.Namespace) -> dict[str, Any]:
-    source, breakdown = _read_json_document(path_value, "breakdown")
+def _analyze_source(value: str, sessions_dir: str | Path | None) -> tuple[Path | None, dict[str, Any]]:
+    candidate = Path(value).expanduser()
+    if candidate.is_file() and candidate.suffix.lower() == ".json":
+        source, data = _read_json_document(candidate, "breakdown")
+        if not isinstance(data.get("sessions"), list) or not isinstance(data.get("root_session_id"), str):
+            raise ValueError(f"input is not a breakdown dataset: {source}")
+        return source, data
+    return None, build_breakdown(value, sessions_dir)
+
+
+def _analyze_breakdown(path_value: str, args: argparse.Namespace, sessions_dir: str | Path | None) -> dict[str, Any]:
+    source, breakdown = _analyze_source(path_value, sessions_dir)
     until_ms, until_local = _local_cutoff(args.until) if args.until else (None, None)
     analysis = build_spans(breakdown)
     if until_ms is not None:
         analysis["viewer_defaults"] = {"until_ms": until_ms, "until_local": until_local}
-    analysis["source"]["breakdown_path"] = str(source)
     output_dir = Path(args.output).expanduser().resolve() if args.output else (Path.cwd() / "analysis" / _safe_filename(analysis["source"]["root_session_id"])).resolve()
-    if output_dir == source:
-        raise ValueError(f"analysis output directory is the source breakdown: {output_dir}")
     output_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    root_name = _safe_filename(analysis["source"]["root_session_id"])
+    breakdown_output = output_dir / f"{root_name}-breakdown.json"
+    metrics_output = output_dir / f"{root_name}-sessions-metrics.json"
     output = output_dir / "spans.json"
+    sessions_table = output_dir / "sessions_table.csv"
+    events_table = output_dir / "events_table.csv"
+    analysis["source"]["breakdown_path"] = breakdown_output.name
+    metrics = build_sessions_metrics(breakdown, analysis)
+    metrics["source"]["breakdown_path"] = breakdown_output.name
+    _write_private(breakdown_output, json.dumps(breakdown, ensure_ascii=False, indent=2) + "\n")
+    _write_private(metrics_output, json.dumps(metrics, ensure_ascii=False, indent=2) + "\n")
     _write_private(output, json.dumps(analysis, ensure_ascii=False, indent=2) + "\n")
+    _write_private(sessions_table, build_sessions_table_csv(metrics))
+    _write_private(events_table, build_events_table_csv(breakdown, analysis, until_ms))
     trace = output_dir / "trace.html"
     _write_private(trace, build_trace_html(breakdown, analysis))
-    return {"path": str(output), "trace_path": str(trace), "spans": len(analysis["spans"]), "warnings": analysis["warnings"], "root_session_id": analysis["source"]["root_session_id"], "included_events": analysis["included_event_count"], "excluded_events": analysis["excluded_event_count"]}
+    return {
+        "path": str(output), "breakdown_path": str(breakdown_output), "metrics_path": str(metrics_output),
+        "sessions_table_path": str(sessions_table), "events_table_path": str(events_table), "trace_path": str(trace),
+        "spans": len(analysis["spans"]), "warnings": analysis["warnings"], "root_session_id": analysis["source"]["root_session_id"],
+        "included_events": analysis["included_event_count"], "excluded_events": analysis["excluded_event_count"], "source_breakdown_path": str(source) if source else None,
+    }
 
 
 def _visualize_breakdown(path_value: str | None, spans_value: str, args: argparse.Namespace) -> dict[str, Any]:
@@ -401,7 +427,10 @@ def _visualize_breakdown(path_value: str | None, spans_value: str, args: argpars
     breakdown_value = path_value or origin.get("breakdown_path")
     if not isinstance(breakdown_value, str) or not breakdown_value:
         raise ValueError("spans do not record a breakdown path; pass BREAKDOWN once or run analyze again")
-    source, breakdown = _read_json_document(breakdown_value, "breakdown")
+    candidate = Path(breakdown_value).expanduser()
+    if path_value is None and not candidate.is_absolute():
+        candidate = spans_path.parent / candidate
+    source, breakdown = _read_json_document(candidate, "breakdown")
     if origin.get("root_session_id") != breakdown.get("root_session_id"):
         raise ValueError("spans root_session_id does not match breakdown")
     if origin.get("breakdown_schema_version") != breakdown.get("schema_version"):
@@ -499,8 +528,8 @@ def build_parser() -> argparse.ArgumentParser:
     breakdown.add_argument("--output", default=None, help="output JSON file; defaults to <root-session-id>-breakdown.json, or use - for stdout")
     breakdown.add_argument("--redact", action="store_true")
 
-    analyze = subparsers.add_parser("analyze", help="derive reusable trace spans from a breakdown JSON file")
-    analyze.add_argument("breakdown", help="local breakdown JSON file")
+    analyze = subparsers.add_parser("analyze", help="build raw breakdown and derived analysis artifacts")
+    analyze.add_argument("breakdown", help="session reference/JSONL or an existing local breakdown JSON file")
     analyze.add_argument("--output", help="analysis directory; defaults to analysis/<root-session-id>")
     analyze.add_argument("--until", help="initial viewer upper boundary: local YYYY-MM-DD:HH:MM:SS")
 
@@ -556,7 +585,7 @@ def run(args: argparse.Namespace) -> None:
         return
 
     if args.command == "analyze":
-        data = _analyze_breakdown(args.breakdown, args)
+        data = _analyze_breakdown(args.breakdown, args, sessions_dir)
         if not args.json:
             print(f"spans written: {data['path']}")
         else:

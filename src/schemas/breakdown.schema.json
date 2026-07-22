@@ -2,20 +2,18 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/sadanand1120/codex-transcript-viewer/schemas/breakdown.schema.json",
   "title": "Codex Transcript Breakdown",
-  "description": "Analytical, lossless breakdown for one local Codex root session and its subagent tree.",
+  "description": "Raw, lossless event breakdown for one local Codex root session and its subagent tree.",
   "type": "object",
   "required": [
     "schema_version",
     "root_session_id",
-    "tree_metrics",
     "sessions",
     "timeline",
     "warnings"
   ],
   "properties": {
-    "schema_version": { "const": 1 },
+    "schema_version": { "const": 2 },
     "root_session_id": { "type": "string" },
-    "tree_metrics": { "$ref": "#/$defs/treeMetrics" },
     "sessions": {
       "type": "array",
       "items": { "$ref": "#/$defs/session" }
@@ -70,8 +68,6 @@
         "meta",
         "meta_snapshots",
         "record_scope",
-        "metrics",
-        "turns",
         "events"
       ],
       "properties": {
@@ -85,11 +81,6 @@
           "items": { "$ref": "#/$defs/metaSnapshot" }
         },
         "record_scope": { "$ref": "#/$defs/recordScope" },
-        "metrics": { "$ref": "#/$defs/sessionMetrics" },
-        "turns": {
-          "type": "array",
-          "items": { "$ref": "#/$defs/turn" }
-        },
         "events": {
           "type": "array",
           "items": { "$ref": "#/$defs/event" }

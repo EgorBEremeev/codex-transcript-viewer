@@ -46,7 +46,7 @@ _TEMPLATE = """<!doctype html>
     <section class="controls" aria-label="Фильтры trace">
       <label>Role <select id="role-filter"><option value="">Все роли</option></select></label>
       <label>Session <select id="session-filter"><option value="">Все сессии</option></select></label>
-      <label>Span kind <select id="span-filter"><option value="">Все</option><option value="turn">turn</option><option value="tool">tool</option></select></label>
+      <label>Span kind <select id="span-filter"><option value="">Все</option><option value="turn">turn</option><option value="tool">tool</option><option value="reasoning">reasoning</option></select></label>
       <label>Event kind <select id="event-filter"><option value="">Все markers</option></select></label>
       <label class="search-label">Поиск <input id="search-filter" type="search" placeholder="tool, команда, event"></label>
       <button id="reset-zoom" type="button">Весь интервал</button>
@@ -74,7 +74,7 @@ _TEMPLATE = """<!doctype html>
     </section>
 
     <section class="panel event-panel" aria-label="Числовая таблица событий">
-      <div class="panel-title"><h2 id="table-title">Events</h2><span id="table-count"></span></div>
+      <div class="panel-title"><h2 id="table-title">Events</h2><span id="table-count"></span><button id="download-events-csv" type="button">Скачать CSV</button></div>
       <div class="event-table" id="event-table"></div>
     </section>
   </main>
