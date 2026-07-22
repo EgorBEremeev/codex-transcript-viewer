@@ -167,6 +167,16 @@ def _command_segments(command: str) -> list[str]:
     return segments
 
 
+_POWERSHELL_STRING_LITERAL = re.compile(
+    r"(?:'(?:''|[^'])*'|\"(?:`.|\"\"|[^\"`])*\"|@'[\s\S]*?'@|@\"[\s\S]*?\"@)\Z"
+)
+
+
+def _is_powershell_string_literal(segment: str) -> bool:
+    """Return whether a segment evaluates only to a PowerShell string value."""
+    return _POWERSHELL_STRING_LITERAL.fullmatch(segment.strip()) is not None
+
+
 def _parse_wam_mplan(segment: str) -> dict[str, Any] | None:
     match = re.search(r"\bwam_mplan(?:\.exe)?\s+(get-many|get|find|tail|validate-store)\b\s*(.*)", segment, re.I | re.S)
     if not match:
@@ -219,6 +229,8 @@ def _command_invocations(command: str) -> list[dict[str, Any]]:
         }]
     result: list[dict[str, Any]] = []
     for segment in _command_segments(command):
+        if _is_powershell_string_literal(segment):
+            continue
         wam = _parse_wam_mplan(segment)
         if wam is not None:
             result.append(wam)

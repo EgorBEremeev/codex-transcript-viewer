@@ -131,6 +131,23 @@ class BreakdownTests(unittest.TestCase):
         self.assertEqual(wam["where"], ["state=ready"])
         self.assertEqual(wam["limit"], "10")
 
+    def test_command_projection_ignores_powershell_string_separators(self) -> None:
+        calls = _command_invocations(
+            "Get-Content -Raw first.md; \"`n---TOOL---`n\"; "
+            "Get-Content -Raw second.md; '---ORCH---'"
+        )
+        self.assertEqual([call["command_name"] for call in calls], ["Get-Content", "Get-Content"])
+        self.assertEqual([call["command_arguments"] for call in calls], ["-Raw first.md", "-Raw second.md"])
+        quoted_command = _command_invocations("'git status --short'; Get-Date")
+        self.assertEqual([call["command_name"] for call in quoted_command], ["Get-Date"])
+        here_string = _command_invocations("@'\n---TOOL---\n'@; Get-Date")
+        self.assertEqual([call["command_name"] for call in here_string], ["Get-Date"])
+
+    def test_command_projection_keeps_commands_with_quoted_arguments(self) -> None:
+        calls = _command_invocations('Write-Output "---TOOL---"; Get-Content -Raw "file with spaces.md"')
+        self.assertEqual([call["command_name"] for call in calls], ["Write-Output", "Get-Content"])
+        self.assertEqual(calls[1]["command_arguments"], '-Raw "file with spaces.md"')
+
     def test_command_projection_handles_windows_paths_and_wam_options(self) -> None:
         python = _command_invocations("@'\nfrom pathlib import Path\n'@ | & 'C:\\Program Files\\Python\\python.exe' -")
         self.assertEqual(python[0]["command_name"], "python")
