@@ -58,6 +58,7 @@ class TraceHtmlTests(unittest.TestCase):
             self.assertTrue(trace.is_file())
             self.assertTrue((analysis_dir / "root-session-breakdown.json").is_file())
             self.assertTrue((analysis_dir / "root-session-sessions-metrics.json").is_file())
+            self.assertTrue((analysis_dir / "sessions_table.json").is_file())
             self.assertTrue((analysis_dir / "root-session_root_events_table.csv").is_file())
             self.assertTrue((analysis_dir / "child-session_root_executor_events_table.csv").is_file())
             viewer = root / "trace.html"

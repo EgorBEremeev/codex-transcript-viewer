@@ -1,13 +1,15 @@
-"""CSV report builders over immutable breakdown and span documents."""
+"""Report builders over immutable breakdown, spans, and metrics documents."""
 
 from __future__ import annotations
 
 import csv
 import io
+from copy import deepcopy
 from typing import Any
 
 
 _TOKEN_KEYS = ("input_tokens", "cached_input_tokens", "cache_write_input_tokens", "output_tokens", "reasoning_output_tokens", "total_tokens")
+_CONTEXT_FIELDS = ("arguments_size", "content_size", "input_size", "message_size", "output_size", "summary_size")
 
 
 def _csv(rows: list[dict[str, Any]], fields: list[str]) -> str:
@@ -20,6 +22,52 @@ def _csv(rows: list[dict[str, Any]], fields: list[str]) -> str:
 
 def _number(value: Any) -> int | float | str:
     return value if isinstance(value, (int, float)) else ""
+
+
+def _sessions_table_metrics(metrics: dict[str, Any], *, tree: bool = False) -> dict[str, Any]:
+    """Select the stable, report-ready aggregate subset from full metrics."""
+    context = metrics.get("context_material") if isinstance(metrics.get("context_material"), dict) else {}
+    events = metrics.get("events") if isinstance(metrics.get("events"), dict) else {}
+    reported = metrics.get("reported_token_usage") if isinstance(metrics.get("reported_token_usage"), dict) else {}
+    result = {
+        "events": {"native_by_kind": deepcopy(events.get("native_by_kind", {}))},
+        "context_material": {field: context.get(field, 0) for field in _CONTEXT_FIELDS},
+        "total_tool_time_ms": metrics.get("total_tool_time_ms", 0),
+        "total_reasoning_time_ms": metrics.get("total_reasoning_time_ms", 0),
+    }
+    if tree:
+        result["reported_token_usage"] = {"sum_session_cumulative": deepcopy(reported.get("sum_session_cumulative", {}))}
+        result["events"]["native_total"] = events.get("native_total", 0)
+        result["wall_clock"] = deepcopy(metrics.get("wall_clock", {}))
+        result["session_count"] = metrics.get("session_count", 0)
+    else:
+        result["reported_token_usage"] = {"last_cumulative": deepcopy(reported.get("last_cumulative", {}))}
+        result["rate_limits"] = deepcopy(metrics.get("rate_limits", {"primary": {"used_percent": None}}))
+    return result
+
+
+def build_sessions_table_json(metrics_document: dict[str, Any]) -> dict[str, Any]:
+    """Project a compact sessions-and-tree report from the metrics document."""
+    sessions = []
+    for session in metrics_document.get("sessions", []):
+        if not isinstance(session, dict):
+            continue
+        metrics = session.get("metrics") if isinstance(session.get("metrics"), dict) else {}
+        sessions.append({
+            "session_id": session.get("session_id", ""),
+            "parent_session_id": session.get("parent_session_id", ""),
+            "agent_path": session.get("agent_path", ""),
+            "thread_source": session.get("thread_source", ""),
+            **_sessions_table_metrics(metrics),
+        })
+    tree_metrics = metrics_document.get("tree_metrics") if isinstance(metrics_document.get("tree_metrics"), dict) else {}
+    return {
+        "report_version": 1,
+        "report_kind": "sessions_table",
+        "source": deepcopy(metrics_document.get("source", {})),
+        "tree": _sessions_table_metrics(tree_metrics, tree=True),
+        "sessions": sessions,
+    }
 
 
 def build_session_events_table_csv(session: dict[str, Any], spans: dict[str, Any], until_ms: int | None = None) -> str:

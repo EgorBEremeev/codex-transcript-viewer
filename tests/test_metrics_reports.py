@@ -6,7 +6,7 @@ import io
 import unittest
 
 from codex_transcript_viewer.metrics import build_sessions_metrics
-from codex_transcript_viewer.reports import build_session_events_table_csv
+from codex_transcript_viewer.reports import build_session_events_table_csv, build_sessions_table_json
 from codex_transcript_viewer.spans import build_spans
 from tests.test_spans import ROOT, TURN, event, fixture
 
@@ -38,7 +38,15 @@ class MetricsAndReportsTests(unittest.TestCase):
         self.assertNotIn("root-session:7", events_csv)
         self.assertNotIn("session_id", events_csv.splitlines()[0])
         self.assertNotIn("agent_path", events_csv.splitlines()[0])
+        sessions_report = build_sessions_table_json(metrics)
+        self.assertEqual(sessions_report["report_kind"], "sessions_table")
+        self.assertEqual(sessions_report["sessions"][0]["events"], root["metrics"]["events"])
+        self.assertEqual(sessions_report["tree"]["reported_token_usage"]["sum_session_cumulative"]["input_tokens"], 125)
+        self.assertNotIn("snapshot_count", sessions_report["sessions"][0]["reported_token_usage"])
+        self.assertNotIn("resets", sessions_report["sessions"][0]["reported_token_usage"])
+        self.assertNotIn("native", sessions_report["sessions"][0]["context_material"])
         json.dumps(metrics)
+        json.dumps(sessions_report)
 
     def test_events_csv_clips_tool_crossing_until_boundary(self) -> None:
         data = fixture()

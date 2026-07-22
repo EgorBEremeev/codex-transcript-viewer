@@ -26,7 +26,7 @@ from .discovery import (
 )
 from .breakdown import build_breakdown
 from .metrics import build_sessions_metrics
-from .reports import build_session_events_table_csv
+from .reports import build_session_events_table_csv, build_sessions_table_json
 from .html_builder import build_html
 from .parser import SCHEMA_VERSION, iter_normalized, load_conversation
 from .spans import breakdown_sha256, build_spans
@@ -407,11 +407,15 @@ def _analyze_breakdown(path_value: str, args: argparse.Namespace, sessions_dir: 
     breakdown_output = output_dir / f"{root_name}-breakdown.json"
     metrics_output = output_dir / f"{root_name}-sessions-metrics.json"
     output = output_dir / "spans.json"
+    sessions_table = output_dir / "sessions_table.json"
     analysis["source"]["breakdown_path"] = breakdown_output.name
     metrics = build_sessions_metrics(breakdown, analysis)
     metrics["source"]["breakdown_path"] = breakdown_output.name
     _write_private(breakdown_output, json.dumps(breakdown, ensure_ascii=False, indent=2) + "\n")
     _write_private(metrics_output, json.dumps(metrics, ensure_ascii=False, indent=2) + "\n")
+    sessions_report = build_sessions_table_json(metrics)
+    sessions_report["source"]["sessions_metrics_path"] = metrics_output.name
+    _write_private(sessions_table, json.dumps(sessions_report, ensure_ascii=False, indent=2) + "\n")
     _write_private(output, json.dumps(analysis, ensure_ascii=False, indent=2) + "\n")
     events_table_paths: list[str] = []
     event_table_names: set[str] = set()
@@ -430,7 +434,7 @@ def _analyze_breakdown(path_value: str, args: argparse.Namespace, sessions_dir: 
     _write_private(trace, build_trace_html(breakdown, analysis))
     return {
         "path": str(output), "breakdown_path": str(breakdown_output), "metrics_path": str(metrics_output),
-        "events_table_paths": events_table_paths, "trace_path": str(trace),
+        "sessions_table_path": str(sessions_table), "events_table_paths": events_table_paths, "trace_path": str(trace),
         "spans": len(analysis["spans"]), "warnings": analysis["warnings"], "root_session_id": analysis["source"]["root_session_id"],
         "included_events": analysis["included_event_count"], "excluded_events": analysis["excluded_event_count"], "source_breakdown_path": str(source) if source else None,
     }

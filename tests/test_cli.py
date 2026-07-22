@@ -364,10 +364,13 @@ class CliTests(unittest.TestCase):
             cli.main(["--sessions-dir", str(self.root), "analyze", "root.jsonl", "--output", str(output)])
         expected = {
             f"{ROOT_ID}-breakdown.json", f"{ROOT_ID}-sessions-metrics.json",
-            "spans.json", "trace.html",
+            "sessions_table.json", "spans.json", "trace.html",
             f"{ROOT_ID}_root_events_table.csv", f"{CHILD_ID}_root_tester_events_table.csv",
         }
         self.assertEqual({path.name for path in output.iterdir()}, expected)
+        sessions_report = json.loads((output / "sessions_table.json").read_text(encoding="utf-8"))
+        self.assertEqual(sessions_report["source"]["sessions_metrics_path"], f"{ROOT_ID}-sessions-metrics.json")
+        self.assertEqual(sessions_report["tree"]["session_count"], 2)
 
 
 if __name__ == "__main__":
