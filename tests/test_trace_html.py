@@ -27,6 +27,7 @@ class TraceHtmlTests(unittest.TestCase):
         self.assertIn("operation-command", html)
         self.assertIn("TRACE_ROW_HEIGHT", html)
         self.assertIn("overflow: auto", html)
+        self.assertNotIn("const arguments=", html)
         self.assertIn("tool&&!clipped", html)
         self.assertIn('call && (call.command_label || call.command_name)', html)
         self.assertIn('return calls.length ? [name, ...calls].join(" → ") : name;', html)
