@@ -26,7 +26,7 @@ from .discovery import (
 )
 from .breakdown import build_breakdown
 from .metrics import build_sessions_metrics
-from .reports import build_events_table_csv, build_sessions_table_csv
+from .reports import build_session_events_table_csv
 from .html_builder import build_html
 from .parser import SCHEMA_VERSION, iter_normalized, load_conversation
 from .spans import breakdown_sha256, build_spans
@@ -63,6 +63,12 @@ def _version() -> str:
 
 def _safe_filename(value: str) -> str:
     return re.sub(r"[^A-Za-z0-9._-]", "_", value).strip(".") or "session"
+
+
+def _safe_agent_path_filename(value: str) -> str:
+    """Project an agent path into a readable, portable filename component."""
+    parts = [_safe_filename(part) for part in re.split(r"[\\/]+", value) if part]
+    return "_".join(parts) or "root"
 
 
 def _open_private(path: Path):
@@ -401,21 +407,30 @@ def _analyze_breakdown(path_value: str, args: argparse.Namespace, sessions_dir: 
     breakdown_output = output_dir / f"{root_name}-breakdown.json"
     metrics_output = output_dir / f"{root_name}-sessions-metrics.json"
     output = output_dir / "spans.json"
-    sessions_table = output_dir / "sessions_table.csv"
-    events_table = output_dir / "events_table.csv"
     analysis["source"]["breakdown_path"] = breakdown_output.name
     metrics = build_sessions_metrics(breakdown, analysis)
     metrics["source"]["breakdown_path"] = breakdown_output.name
     _write_private(breakdown_output, json.dumps(breakdown, ensure_ascii=False, indent=2) + "\n")
     _write_private(metrics_output, json.dumps(metrics, ensure_ascii=False, indent=2) + "\n")
     _write_private(output, json.dumps(analysis, ensure_ascii=False, indent=2) + "\n")
-    _write_private(sessions_table, build_sessions_table_csv(metrics))
-    _write_private(events_table, build_events_table_csv(breakdown, analysis, until_ms))
+    events_table_paths: list[str] = []
+    event_table_names: set[str] = set()
+    for session in breakdown.get("sessions", []):
+        if not isinstance(session, dict):
+            continue
+        session_name = _safe_filename(str(session.get("session_id") or "session"))
+        agent_name = _safe_agent_path_filename(str(session.get("agent_path") or ""))
+        event_table = output_dir / f"{session_name}_{agent_name}_events_table.csv"
+        if event_table.name in event_table_names:
+            raise ValueError(f"two sessions resolve to the same events table filename: {event_table.name}")
+        event_table_names.add(event_table.name)
+        _write_private(event_table, build_session_events_table_csv(session, analysis, until_ms))
+        events_table_paths.append(str(event_table))
     trace = output_dir / "trace.html"
     _write_private(trace, build_trace_html(breakdown, analysis))
     return {
         "path": str(output), "breakdown_path": str(breakdown_output), "metrics_path": str(metrics_output),
-        "sessions_table_path": str(sessions_table), "events_table_path": str(events_table), "trace_path": str(trace),
+        "events_table_paths": events_table_paths, "trace_path": str(trace),
         "spans": len(analysis["spans"]), "warnings": analysis["warnings"], "root_session_id": analysis["source"]["root_session_id"],
         "included_events": analysis["included_event_count"], "excluded_events": analysis["excluded_event_count"], "source_breakdown_path": str(source) if source else None,
     }
